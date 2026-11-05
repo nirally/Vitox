@@ -62,6 +62,20 @@ the Vitox quick menu.
 (working or not), please let me know (open an issue) with the game, its title ID and what you saw, so I can add
 it to the table.
 
+## Firmware
+
+On first start Vitox asks for three PS Vita firmware files. Download them from Sony's servers, copy them to a USB
+drive (any name, any folder), connect it to the console and press **A** on the setup screen:
+
+| Package | Download (official Sony server) |
+|---|---|
+| System software 3.74 | [PSVUPDAT.PUP](http://dus01.psv.update.playstation.net/update/psv/image/2022_0209/rel_f2c7b12fe85496ec88a0391b514d6e3b/PSVUPDAT.PUP) |
+| Pre-installed package 3.74 | [PSP2UPDAT.PUP (preinst)](http://dus01.psp2.update.playstation.net/update/psp2/image/2022_0209/pre_efd1ef6c1cc2fe92e72e9e783e421237/PSP2UPDAT.PUP?dest=us) |
+| Font package | [PSP2UPDAT.PUP (fonts)](http://dus01.psp2.update.playstation.net/update/psp2/image/2019_0924/sd_8b5f60b56c3da8365b973dba570c53a5/PSP2UPDAT.PUP?dest=us) |
+
+Two of these files have the same name, so rename one (for example `PREINST.PUP`); Vitox recognises each file by its
+contents. See also the [Vita3K Quickstart guide](https://vita3k.org/quickstart#firmware).
+
 ## Screenshots
 
 Captured on an Xbox Series console running Vitox.
