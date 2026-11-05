@@ -86,7 +86,7 @@ To update, install the new `.msix` the same way; your games, saves and settings 
 
 ## Firmware
 
-On first start Vitox asks for three PS Vita firmware files. Download them from Sony's servers, copy them to a USB
+On first start Vitox asks for three PS Vita firmware files. Download them from Sony's servers (right click each link -> "Save link as..."), copy them to a USB
 drive (any name, any folder), connect it to the console and press **A** on the setup screen:
 
 | Package | Download (official Sony server) |
