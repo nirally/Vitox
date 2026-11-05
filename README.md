@@ -17,6 +17,8 @@ launcher, so commercial Vita games and homebrew can be installed from a USB driv
 
 <p align="center"><img src="docs/images/launcher-library.png" alt="The Vitox library launcher on Xbox" width="900"></p>
 
+<p align="center">(Video showcase of the app plus a short gameplay of Gravity Rush: https://youtu.be/IHn02udTHqA)</p>
+
 The library shows every installed game with its artwork. Press **A** to start a game, **Menu** for per-game
 options, **RB** for Settings, and the **+** tile to install games from a USB drive. In game, press **R3** for
 the Vitox quick menu.
