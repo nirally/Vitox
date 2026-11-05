@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/vitox-splash.png" alt="Vitox - PlayStation Vita Runtime" width="700"></p>
+
 # Vitox
 
 **Vitox** is a PlayStation Vita runtime for the **Xbox Series X|S** (Developer Mode). It packages the
@@ -9,6 +11,14 @@ launcher, so commercial Vita games and homebrew can be installed from a USB driv
 By **Nirally**, built with Claude.
 
 ---
+
+## The launcher
+
+<p align="center"><img src="docs/images/launcher-library.png" alt="The Vitox library launcher on Xbox" width="900"></p>
+
+The library shows every installed game with its artwork. Press **A** to start a game, **Menu** for per-game
+options, **RB** for Settings, and the **+** tile to install games from a USB drive. In game, press **R3** for
+the Vitox quick menu.
 
 ## Highlights
 
