@@ -98,7 +98,7 @@ contents. See also the [Vita3K Quickstart guide](https://vita3k.org/quickstart#f
 
 ## Screenshots
 
-Captured on an Xbox Series console running Vitox.
+Captured on an Xbox Series X console running Vitox.
 
 | | |
 |---|---|
