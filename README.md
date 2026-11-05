@@ -11,8 +11,6 @@ launcher, so commercial Vita games and homebrew can be installed from a USB driv
 > [Issues](https://github.com/nirally/Vitox/issues) (game name, title ID and what happened) so it can be fixed.
 > Download the latest build (`vitox-alpha.zip`) from [Releases](https://github.com/nirally/Vitox/releases).
 
-By **Nirally**, built with Claude.
-
 ---
 
 ## The launcher
@@ -38,7 +36,7 @@ the Vitox quick menu.
   (press **R3**) and a "Return to Launcher" flow.
 - **USB installer**: the "+" tile installs `.zip` / `.vpk` archives from a USB drive: games, updates,
   DLC and homebrew. NoNpDrm dumps are decrypted during installation (PFS, as upstream Vita3K does).
-- **Settings**: controller remapping and stick dead zones, internal resolution upscaling (1x–4x),
+- **Settings**: controller remapping and stick dead zones, internal resolution upscaling up to 4K (1x–4x),
   asynchronous shader compilation and shader pre-warming (with a loading screen), a performance statistics
   overlay (FPS / memory / CPU), library options (hide homebrew), SteamGridDB artwork (your own API key).
 - **Per-game settings**: resolution, shader options and overlay can be set per title; uninstall with or
