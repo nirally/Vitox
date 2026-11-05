@@ -1,0 +1,17 @@
+out/
+releases/
+AppPackages/
+Generated Files/
+.vs/
+x64/
+app/m6a/
+*.pfx
+*.cer
+*.msix
+*.appx
+*.pdb
+*.log
+*.pre-*
+*steamgriddb-key*
+*.config.json
+state/

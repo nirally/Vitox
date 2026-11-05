@@ -1,0 +1,798 @@
+// Vitox M7A (0.0.14.x): FIRST REAL GUEST SceGxm VISUAL HOMEBREW through the real Vita3K core.
+//
+// VITOX0002 is a self-made VitaSDK homebrew (C:\Vitox\Vitox-Homebrew\VITOX0002, packaged with the app). Every pixel it
+// shows is written by guest SceGxm work (sceGxmTransferFill, executed by Vita3K's renderer command processor) and
+// shown through guest SceDisplay calls. Path, all real Vita3K code unless noted:
+//   install:  fs_utils::copy_directory_contents(package\homebrew\VITOX0002 -> vita-fs\ux0\app\VITOX0002)
+//   renderer: renderer::init(Backend::Vulkan) (direct dzn ICD) -> late_init -> init(mem), mapping Disabled; the
+//             ScreenRenderer bridge to the host presenter (M6C.2 P_Production; headless offscreen for the precheck)
+//   setup:    io init, KernelState::init(call_import = module_parent call_import), param.sfo, init_exported_vars,
+//             selected LIBRARY_INITs (SceSysmem; SceGxm/SceDisplay have none)
+//   load:     module_parent load_module("app0:eboot.bin") -> load_self -> relocation -> import stubs
+//   run:      Vita3K's order: renderer->set_app, main thread start, start_sync_thread (vblank thread; its two input
+//             calls compiled out + counted, user-approved), renderer::start_render_thread (process_batches ->
+//             render_frame -> swap_window)
+//   imports:  guest svc -> module_parent call_import -> REAL ImportFns (selected-NID dispatcher, 0 probe-side code)
+//   exit:     guest sceKernelExitProcess; then Vita3K's shutdown order: preclose_action, stop_render_thread,
+//             gxm.deinit, display.deinit, guest threads, unload_module, VKState cleanup, kernel/mem/io deinit
+// The host never writes guest pixels: it only SAMPLES the displayed guest framebuffer (read-only) as evidence.
+#include "vitox_gxm_homebrew_probe.h"
+
+#include "vitox_import_dispatch.h"
+
+#include <vitox_sdl_shim_report.h>
+#include <vitox_swscale_disabled.h>
+#include <vitox_vblank_input_disabled.h>
+
+#include <config/state.h>
+#include <display/functions.h>
+#include <display/state.h>
+#include <emuenv/state.h>
+#include <gxm/state.h>
+#include <io/functions.h>
+#include <io/state.h>
+#include <io/vfs.h>
+#include <kernel/state.h>
+#include <kernel/thread/thread_state.h>
+#include <mem/functions.h>
+#include <mem/state.h>
+#include <modules/module_parent.h>
+#include <nids/functions.h>
+#include <packages/sfo.h>
+#include <renderer/frame_host.h>
+#include <renderer/functions.h>
+#include <renderer/state.h>
+#include <renderer/vulkan/state.h>
+#include <util/fs.h>
+
+#include <vitox_m6b_shaders.h> // M7B.1 differential control: the proven M6B DXC SPIR-V (vs_main, ps_nopc)
+#include <util/log.h>
+
+#include <spdlog/sinks/callback_sink.h>
+#include <spdlog/sinks/null_sink.h>
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <set>
+#include <thread>
+
+std::string vitox_sha256_hex(const void *data, size_t size); // compat/vitox_sha256.cpp
+
+namespace {
+
+const VitoxCoreHost *g_host = nullptr;
+std::atomic<uint64_t> g_vita3k_errors{ 0 }; // [vita3k error]/[vita3k critical] lines seen by the log bridge
+namespace sfs = std::filesystem;
+
+template <typename... Args>
+void out(fmt::format_string<Args...> f, Args &&...args) {
+    g_host->log(fmt::format(f, std::forward<Args>(args)...).c_str());
+}
+void snap(const char *tag) { g_host->mem_snapshot(tag); }
+const char *pf(bool b) { return b ? "PASS" : "FAIL"; }
+
+void install_log_bridge() {
+    auto sink = std::make_shared<spdlog::sinks::callback_sink_mt>([](const spdlog::details::log_msg &msg) {
+        const auto level = spdlog::level::to_string_view(msg.level);
+        if (msg.level >= spdlog::level::err)
+            ++g_vita3k_errors;
+        const std::string line = fmt::format("[vita3k {}] {}", std::string_view(level.data(), level.size()),
+            std::string_view(msg.payload.data(), msg.payload.size()));
+        g_host->log(line.c_str());
+    });
+    auto logger = std::make_shared<spdlog::logger>("vita3k", sink);
+    logger->set_level(spdlog::level::info);
+    spdlog::set_default_logger(logger);
+}
+void silence_log() { spdlog::set_default_logger(std::make_shared<spdlog::logger>("vita3k-m7a-off", std::make_shared<spdlog::sinks::null_sink_mt>())); }
+
+std::string u8(const sfs::path &p) {
+    const auto s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+std::string read_all(const sfs::path &p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+std::set<std::string> names(const sfs::path &dir) {
+    std::set<std::string> s;
+    std::error_code ec;
+    for (auto it = sfs::directory_iterator(dir, ec); !ec && it != sfs::directory_iterator(); it.increment(ec))
+        s.insert(u8(it->path().filename()));
+    return s;
+}
+
+// Vitox FrameHost: no native window handle and no VkSurfaceKHR provider - presentation is external (host D3D12).
+class VitoxFrameHost : public renderer::FrameHost {
+public:
+    explicit VitoxFrameHost(const vitox::ExternalPresenter &p)
+        : p(p) {}
+    renderer::DisplayHandle handle() const override { return {}; }
+    int drawable_width() const override { return static_cast<int>(p.width()); }
+    int drawable_height() const override { return static_cast<int>(p.height()); }
+    std::vector<std::string> font_dirs() const override { return {}; }
+
+private:
+    const vitox::ExternalPresenter &p;
+};
+
+// The 14 imports of VITOX0002 (vita-elf-create -v, host side), as {NID, library NID}. M7A.1: no sceGxmUnmapMemory /
+// sceKernelFreeMemBlock any more - the final scanout buffer stays allocated until process exit.
+struct Expected {
+    uint32_t nid, lib;
+};
+constexpr Expected kExpected[] = {
+    { 0xB0F1E4EC, 0xF76B66BD }, { 0xC61E34FC, 0xF76B66BD }, { 0xB627DE66, 0xF76B66BD }, // SceGxm: Initialize, MapMemory, Terminate
+    { 0x69DDFF5E, 0xF76B66BD }, { 0x45229C39, 0xF76B66BD },                             // SceGxm: TransferFill, TransferFinish
+    { 0x7A410B64, 0x4FAACD11 },                                                         // SceDisplayUser: SetFrameBuf
+    { 0x5795E898, 0x5ED8F994 },                                                         // SceDisplay: WaitVblankStart
+    { 0xB9D5EBDE, 0x37FE725A }, { 0xB8EF5818, 0x37FE725A },                             // SceSysmem: Alloc, GetBase
+    { 0x9670D39F, 0xCAE9ACE6 }, { 0x6C60AC61, 0xCAE9ACE6 }, { 0x7595D9AA, 0xCAE9ACE6 }, // SceLibKernel
+    { 0xC70B8886, 0xF2FF276E }, { 0x34EFD876, 0xF2FF276E },                             // SceIofilemgr
+};
+// The 37 imports of VITOX0003 (M7B Phase B, vita-elf-create -v; M7B.7 / 0.0.16.9 added sceGxmDepthStencilSurfaceInit).
+constexpr Expected kExpected3[] = {
+    { 0x8734FF4E, 0xF76B66BD }, { 0xED0F6E25, 0xF76B66BD }, { 0xE84CE5B4, 0xF76B66BD }, { 0x207AF96B, 0xF76B66BD }, { 0xEC5C26B5, 0xF76B66BD },
+    { 0xB98C5B0D, 0xF76B66BD }, { 0xBC059AFC, 0xF76B66BD }, { 0xFE300E2F, 0xF76B66BD }, { 0x0733D8AE, 0xF76B66BD }, { 0xB0F1E4EC, 0xF76B66BD },
+    { 0x008402C6, 0xF76B66BD }, { 0xC61E34FC, 0xF76B66BD }, { 0xFA437510, 0xF76B66BD }, { 0xED8B6C69, 0xF76B66BD }, { 0x277794C4, 0xF76B66BD },
+    { 0x5C79D59A, 0xF76B66BD }, { 0x97118913, 0xF76B66BD }, { 0xAD2F48D9, 0xF76B66BD }, { 0x65DD0C84, 0xF76B66BD }, { 0x31FF8ABD, 0xF76B66BD },
+    { 0x895DF2E9, 0xF76B66BD }, { 0x05032658, 0xF76B66BD }, { 0x4ED2E49D, 0xF76B66BD }, { 0xB7BBA6D5, 0xF76B66BD }, { 0x2B528462, 0xF76B66BD },
+    { 0x6A6013E1, 0xF76B66BD }, { 0xB627DE66, 0xF76B66BD }, { 0xCA9D41D1, 0xF76B66BD },                             // SceGxm (28)
+    { 0x7A410B64, 0x4FAACD11 }, { 0x5795E898, 0x5ED8F994 },                                                         // SceDisplayUser, SceDisplay
+    { 0xB9D5EBDE, 0x37FE725A }, { 0xB8EF5818, 0x37FE725A },                                                         // SceSysmem
+    { 0x9670D39F, 0xCAE9ACE6 }, { 0x6C60AC61, 0xCAE9ACE6 }, { 0x7595D9AA, 0xCAE9ACE6 },                             // SceLibKernel
+    { 0xC70B8886, 0xF2FF276E }, { 0x34EFD876, 0xF2FF276E },                                                         // SceIofilemgr
+};
+constexpr uint32_t kNidSetFrameBuf = 0x7A410B64, kNidTransferFill = 0x69DDFF5E, kNidWaitVblank = 0x5795E898, kNidGxmInit = 0xB0F1E4EC,
+                   kNidDraw = 0xBC059AFC, kNidBeginScene = 0x8734FF4E, kNidQueueAdd = 0xEC5C26B5, kNidReserveUniform = 0x97118913,
+                   kNidSetUniform = 0x65DD0C84;
+
+const char *mapping_name(MappingMethod m) {
+    switch (m) {
+    case MappingMethod::Disabled: return "Disabled";
+    case MappingMethod::DoubleBuffer: return "DoubleBuffer";
+    case MappingMethod::ExernalHost: return "ExternalHost";
+    case MappingMethod::PageTable: return "PageTable";
+    case MappingMethod::NativeBuffer: return "NativeBuffer";
+    }
+    return "?";
+}
+
+// 0.0.14.1 diagnostics: CPU use of the process and of Vita3K's host threads (100 % = one core fully busy).
+uint64_t ft_us(const FILETIME &a, const FILETIME &b) {
+    return ((static_cast<uint64_t>(a.dwHighDateTime) << 32 | a.dwLowDateTime) + (static_cast<uint64_t>(b.dwHighDateTime) << 32 | b.dwLowDateTime)) / 10;
+}
+uint64_t thread_cpu_us(HANDLE h) {
+    FILETIME c, e, k, u;
+    return h && GetThreadTimes(h, &c, &e, &k, &u) ? ft_us(k, u) : 0;
+}
+uint64_t process_cpu_us() {
+    FILETIME c, e, k, u;
+    return GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u) ? ft_us(k, u) : 0;
+}
+// Thread handles are DUPLICATED when captured: std::thread::native_handle() is closed when the thread is joined, and
+// UWP's strict handle checks turn a query on a closed handle into SEH 0xC0000008 (seen in 0.0.14.1).
+HANDLE dup(HANDLE h) {
+    HANDLE d = nullptr;
+    return h && DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &d, THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0) ? d : nullptr;
+}
+struct CpuSampler {
+    HANDLE ui = nullptr, render = nullptr, vblank = nullptr, gxm_host = nullptr;
+    ~CpuSampler() {
+        for (HANDLE h : { ui, render, vblank, gxm_host })
+            if (h)
+                CloseHandle(h);
+    }
+    uint64_t p0 = 0, ui0 = 0, r0 = 0, v0 = 0, g0 = 0;
+    std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+    std::string line() {
+        const auto now = std::chrono::steady_clock::now();
+        const double wall = std::chrono::duration<double, std::micro>(now - t0).count();
+        const uint64_t p = process_cpu_us(), u = thread_cpu_us(ui), r = thread_cpu_us(render), v = thread_cpu_us(vblank), g = thread_cpu_us(gxm_host);
+        const auto pct = [&](uint64_t a, uint64_t b) { return wall > 0 ? 100.0 * static_cast<double>(a - b) / wall : 0.0; };
+        std::string s = fmt::format("cpu: process {:.0f}% | ui {:.0f}% render {:.0f}% vblank {:.0f}% gxm-display-host {:.0f}%", pct(p, p0), pct(u, ui0),
+            render ? pct(r, r0) : 0.0, vblank ? pct(v, v0) : 0.0, gxm_host ? pct(g, g0) : 0.0);
+        p0 = p, ui0 = u, r0 = r, v0 = v, g0 = g, t0 = now;
+        return s;
+    }
+};
+
+// 0.0.14.1: every shutdown step is logged on entry/exit; a watchdog reports a step that takes > 5 s and whether the
+// render thread is still producing frames meanwhile (diagnostic only - it never alters the step).
+struct StepWatch {
+    std::atomic<const char *> step{ nullptr };
+    std::atomic<bool> done{ false };
+    std::chrono::steady_clock::time_point since;
+    std::thread th;
+    void start() {
+        th = std::thread([this] {
+            unsigned reported = 0;
+            while (!done) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                const char *st = step.load();
+                if (!st)
+                    continue;
+                const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
+                if (s > 5.0 * (reported + 1)) {
+                    ++reported;
+                    const auto x = vitox_external_present_stats();
+                    out("m7a shutdown WATCHDOG: step '{}' running for {:.1f} s | external acquires={} presents ok={} (still growing = render thread looping) | "
+                        "process {}", st, s, x.acquires, x.presents_ok, fmt::format("cpu_us={}", process_cpu_us()));
+                }
+            }
+        });
+    }
+    void begin(const char *s) {
+        out("m7a shutdown step: {} ...", s);
+        since = std::chrono::steady_clock::now();
+        step = s;
+    }
+    void end() {
+        out("m7a shutdown step: {} done in {:.3f} s", step.load(), std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count());
+        step = nullptr;
+    }
+    void stop() {
+        done = true;
+        if (th.joinable())
+            th.join();
+    }
+};
+
+// M7B.1: dzn's exported diagnostic counter (VITOX_UWP dzn only): draws skipped because no D3D12 PSO was applied
+volatile long *dzn_pso_failures() {
+    HMODULE dzn = GetModuleHandleW(L"vulkan_dzn.dll");
+    return dzn ? reinterpret_cast<volatile long *>(GetProcAddress(dzn, "vitox_dzn_pso_failures")) : nullptr;
+}
+
+// M7B.1 DIFFERENTIAL CONTROL (not guest rendering, never drawn): one minimal pipeline on the SAME Vulkan/dzn device -
+// the proven M6B shaders, no vertex input, static viewport/scissor, no depth/stencil, NO dynamic states - so dzn takes
+// its non-variant path and calls CreatePipelineState immediately (dzn's M7B.1 logging prints that HRESULT too).
+void control_pipeline(renderer::vulkan::VKState &vk) {
+    // (Vita3K builds vulkan-hpp without struct constructors: fields are set explicitly)
+    try {
+        const vk::Device dev = vk.device;
+        vk::AttachmentDescription att{};
+        att.format = vk::Format::eB8G8R8A8Unorm;
+        att.samples = vk::SampleCountFlagBits::e1;
+        att.loadOp = vk::AttachmentLoadOp::eClear;
+        att.storeOp = vk::AttachmentStoreOp::eStore;
+        att.stencilLoadOp = vk::AttachmentLoadOp::eDontCare;
+        att.stencilStoreOp = vk::AttachmentStoreOp::eDontCare;
+        att.initialLayout = vk::ImageLayout::eUndefined;
+        att.finalLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        vk::AttachmentReference ref{};
+        ref.attachment = 0;
+        ref.layout = vk::ImageLayout::eColorAttachmentOptimal;
+        vk::SubpassDescription sub{};
+        sub.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &ref;
+        vk::RenderPassCreateInfo rpi{};
+        rpi.attachmentCount = 1;
+        rpi.pAttachments = &att;
+        rpi.subpassCount = 1;
+        rpi.pSubpasses = &sub;
+        const vk::RenderPass rp = dev.createRenderPass(rpi);
+        const vk::PipelineLayout layout = dev.createPipelineLayout(vk::PipelineLayoutCreateInfo{});
+        vk::ShaderModuleCreateInfo vsi{};
+        vsi.codeSize = sizeof(kVitoxTriVs);
+        vsi.pCode = kVitoxTriVs;
+        vk::ShaderModuleCreateInfo psi{};
+        psi.codeSize = sizeof(kVitoxTriPsNoPc);
+        psi.pCode = kVitoxTriPsNoPc;
+        const vk::ShaderModule vs = dev.createShaderModule(vsi), ps = dev.createShaderModule(psi);
+        vk::PipelineShaderStageCreateInfo stages[2]{};
+        stages[0].stage = vk::ShaderStageFlagBits::eVertex;
+        stages[0].module = vs;
+        stages[0].pName = "vs_main";
+        stages[1].stage = vk::ShaderStageFlagBits::eFragment;
+        stages[1].module = ps;
+        stages[1].pName = "ps_nopc";
+        const vk::PipelineVertexInputStateCreateInfo vi{};
+        vk::PipelineInputAssemblyStateCreateInfo ia{};
+        ia.topology = vk::PrimitiveTopology::eTriangleList;
+        vk::Viewport viewport{};
+        viewport.width = 960;
+        viewport.height = 544;
+        viewport.maxDepth = 1;
+        vk::Rect2D scissor{};
+        scissor.extent.width = 960;
+        scissor.extent.height = 544;
+        vk::PipelineViewportStateCreateInfo vp{};
+        vp.viewportCount = 1;
+        vp.pViewports = &viewport;
+        vp.scissorCount = 1;
+        vp.pScissors = &scissor;
+        vk::PipelineRasterizationStateCreateInfo rs{};
+        rs.lineWidth = 1.0f;
+        vk::PipelineMultisampleStateCreateInfo ms{};
+        ms.rasterizationSamples = vk::SampleCountFlagBits::e1;
+        vk::PipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        vk::PipelineColorBlendStateCreateInfo cb{};
+        cb.attachmentCount = 1;
+        cb.pAttachments = &cba;
+        vk::GraphicsPipelineCreateInfo gpi{};
+        gpi.stageCount = 2;
+        gpi.pStages = stages;
+        gpi.pVertexInputState = &vi;
+        gpi.pInputAssemblyState = &ia;
+        gpi.pViewportState = &vp;
+        gpi.pRasterizationState = &rs;
+        gpi.pMultisampleState = &ms;
+        gpi.pColorBlendState = &cb;
+        gpi.layout = layout;
+        gpi.renderPass = rp;
+        const auto res = dev.createGraphicsPipeline(nullptr, gpi);
+        out("m7b.1 CONTROL pipeline (M6B vs_main + ps_nopc, no dynamic state, same device) -> {} (dzn logs its CreatePipelineState HRESULT)",
+            vk::to_string(res.result));
+        if (res.result == vk::Result::eSuccess)
+            dev.destroyPipeline(res.value);
+        dev.destroyShaderModule(vs);
+        dev.destroyShaderModule(ps);
+        dev.destroyPipelineLayout(layout);
+        dev.destroyRenderPass(rp);
+    } catch (const std::exception &e) {
+        out("m7b.1 CONTROL pipeline threw: {}", e.what());
+    }
+}
+
+} // namespace
+
+extern "C" VitoxGxmHomebrewResult vitox_gxm_homebrew_probe_run(const VitoxCoreHost *host, vitox::ExternalPresenter *presenter, void (*pump)(),
+    const wchar_t *install_src, const wchar_t *local_state, const wchar_t *dev_root, const wchar_t *static_assets, unsigned timeout_s, unsigned homebrew) {
+    g_host = host;
+    VitoxGxmHomebrewResult r{};
+    const bool tri = homebrew == 3;
+    const char *title_id_expected = tri ? "VITOX0003" : "VITOX0002";
+    const Expected *expected_begin = tri ? std::begin(kExpected3) : std::begin(kExpected);
+    const size_t expected_count = tri ? std::size(kExpected3) : std::size(kExpected);
+    g_vita3k_errors = 0;
+    install_log_bridge();
+    const fs::path ls(local_state), vita_fs = fs::path(dev_root) / "vita-fs";
+    const sfs::path s_vita_fs(vita_fs.native()), s_app = s_vita_fs / "ux0" / "app" / title_id_expected;
+    const sfs::path s_result_dir = s_vita_fs / "ux0" / "data" / (tri ? "VitoxGxmTri" : "VitoxGxm"), s_result = s_result_dir / "result.txt";
+    out("M7A GXM homebrew begin: package source '{}' -> '{}', external presenter {}x{} x{} images", u8(sfs::path(install_src)), u8(s_app),
+        presenter->width(), presenter->height(), presenter->image_count());
+    snap("m7a_base");
+
+    // ---- install (host step; real Vita3K copy) ----
+    std::error_code ec;
+    const bool result_dir_preexisting = sfs::exists(s_result_dir, ec);
+    if (sfs::exists(s_result, ec)) // stale sentinel from an earlier run of this probe
+        sfs::remove(s_result, ec);
+    const auto data_before = names(s_vita_fs / "ux0" / "data");
+    const bool copied = fs_utils::copy_directory_contents(fs::path(install_src), fs::path(s_app.native()));
+    const std::string eboot = read_all(s_app / "eboot.bin"), sfo_bytes = read_all(s_app / "sce_sys" / "param.sfo");
+    const std::string pkg_eboot = read_all(sfs::path(install_src) / "eboot.bin");
+    r.installed = copied && !eboot.empty() && eboot == pkg_eboot && !sfo_bytes.empty();
+    out("m7a install: fs_utils::copy_directory_contents={} | eboot.bin {} B SHA-256 {} (== package copy: {}) | sce_sys/param.sfo {} B SHA-256 {} -> {}", copied,
+        eboot.size(), vitox_sha256_hex(eboot.data(), eboot.size()), eboot == pkg_eboot, sfo_bytes.size(),
+        vitox_sha256_hex(sfo_bytes.data(), sfo_bytes.size()), pf(r.installed));
+    if (!r.installed) {
+        silence_log();
+        return r;
+    }
+
+    // ---- EmuEnvState + io + renderer (Vita3K app order: renderer, late_init, mem) ----
+    auto *emuenv = new EmuEnvState();
+    emuenv->config_path = ls;
+    emuenv->log_path = ls / "log";
+    emuenv->cache_path = ls / "cache";
+    emuenv->vita_fs_path = vita_fs;
+    emuenv->static_assets_path = fs::path(static_assets);
+    std::atomic<bool> exited{ false };
+    std::atomic<int> exit_code{ -1 };
+    emuenv->kernel.process_exit_callback = [&](int res, auto) {
+        exit_code = res;
+        exited = true;
+    };
+    vitox_import_stats_reset();
+    bool ok = init(emuenv->io, emuenv->cache_path, emuenv->log_path, emuenv->vita_fs_path, false);
+    vitox_set_external_presenter(presenter);
+    vitox_xp_set_variant(VitoxXpVariant::P_Production);
+    VitoxFrameHost frame_host(*presenter);
+    const bool rinit = ok && renderer::init(frame_host, emuenv->renderer, renderer::Backend::Vulkan, emuenv->cfg, emuenv->get_root_paths());
+    snap("m7a_after_renderer_init");
+    bool late = false;
+    if (rinit) {
+        emuenv->renderer->late_init(emuenv->cfg, title_id_expected, emuenv->mem);
+        const bool need_page_table = emuenv->renderer->mapping_method == MappingMethod::PageTable || emuenv->renderer->mapping_method == MappingMethod::NativeBuffer;
+        late = init(emuenv->mem, need_page_table);
+        // renderer half of apply_renderer_config (no overlay manager), config defaults
+        const auto &cc = emuenv->cfg.current_config;
+        auto &rs = *emuenv->renderer;
+        rs.res_multiplier = cc.resolution_multiplier;
+        rs.set_vsync_state(cc.v_sync);
+        rs.set_surface_sync_state(cc.disable_surface_sync);
+        rs.set_screen_filter(cc.screen_filter);
+        rs.set_anisotropic_filtering(cc.anisotropic_filtering);
+        rs.set_stretch_display(cc.stretch_the_display_area);
+        rs.stretch_hd_pixel_perfect(cc.fullscreen_hd_res_pixel_perfect);
+        rs.set_async_compilation(cc.async_pipeline_compilation);
+    }
+    const VitoxExternalPresentStats s0 = vitox_external_present_stats();
+    r.renderer = rinit && late && emuenv->renderer->mapping_method == MappingMethod::Disabled && s0.images >= 2 && s0.image_handles_ok == s0.images
+        && s0.gpu_sync;
+    snap("m7a_after_late_init");
+    out("m7a renderer::init(Vulkan) -> {} | GPU '{}' | late_init + init(mem) -> {} | mapping_method={} | external images={} shared={} gpu_sync={} -> {}", rinit,
+        rinit ? std::string(emuenv->renderer->get_gpu_name()) : std::string("-"), late,
+        rinit ? mapping_name(emuenv->renderer->mapping_method) : "-", s0.images, s0.image_handles_ok, s0.gpu_sync, pf(r.renderer));
+
+    // ---- kernel + app setup (load_app_impl() equivalent) ----
+    const auto call_import = [emuenv](CPUState &cpu, uint32_t nid, SceUID thread_id) { ::call_import(*emuenv, cpu, nid, thread_id); };
+    ok = r.renderer && emuenv->kernel.init(emuenv->mem, call_import, emuenv->cfg.current_config.cpu_opt);
+    emuenv->io.title_id = title_id_expected;
+    emuenv->io.app_path = title_id_expected;
+    emuenv->io.savedata = title_id_expected;
+    emuenv->io.user_id = "00";
+    init_device_paths(emuenv->io);
+    init_savedata_app_path(emuenv->io, emuenv->vita_fs_path);
+    vfs::FileBuffer param_sfo;
+    std::string title, title_id;
+    if (vfs::read_app_file(param_sfo, emuenv->vita_fs_path, emuenv->io.app_path, "sce_sys/param.sfo") && sfo::load(emuenv->sfo_handle, param_sfo)) {
+        sfo::get_data_by_key(title, emuenv->sfo_handle, "TITLE");
+        sfo::get_data_by_key(title_id, emuenv->sfo_handle, "TITLE_ID");
+    }
+    r.sfo = title_id == title_id_expected;
+    out("m7a setup: KernelState::init(call_import=module_parent::call_import, cpu_opt={}) -> {} | param.sfo TITLE='{}' TITLE_ID='{}' -> {}",
+        emuenv->cfg.current_config.cpu_opt, ok, title, title_id, pf(r.sfo));
+    init_exported_vars(*emuenv);
+    vitox_init_selected_libraries(*emuenv);
+    out("m7a setup: init_exported_vars (real; 0 variable exports selected) + LIBRARY_INIT(SceSysmem) (real); SceGxm/SceDisplay have no LIBRARY_INIT");
+
+    // ---- load ----
+    const SceUID main_module_id = ok ? load_module(*emuenv, "app0:eboot.bin") : -1;
+    snap("m7a_after_load");
+    ThreadStatePtr main_thread;
+    std::chrono::steady_clock::time_point t_run;
+    if (main_module_id >= 0) {
+        const auto mod = emuenv->kernel.loaded_modules[main_module_id];
+        const auto &info = mod->info;
+        out("m7a load_module('app0:eboot.bin') uid={} module='{}' start_entry=0x{:08X}", main_module_id, info.module_name, info.start_entry.address());
+        std::map<uint32_t, uint32_t> bound;
+        for (const auto &[nid, b] : emuenv->kernel.func_binding_infos)
+            bound[nid] = b.library_nid;
+        int expected_found = 0;
+        bool all_selected = true;
+        for (const auto &[nid, lib] : bound) {
+            const VitoxSelectedImport *imp = vitox_resolve_selected_import(nid);
+            all_selected &= imp != nullptr;
+            bool expected = false;
+            for (const Expected *e = expected_begin; e != expected_begin + expected_count; ++e)
+                expected |= e->nid == nid && e->lib == lib;
+            expected_found += expected;
+            out("m7a import bound: library_nid=0x{:08X} nid=0x{:08X} {} -> {}", lib, nid, import_name(nid),
+                imp ? fmt::format("selected, REAL ImportFn={}", reinterpret_cast<const void *>(*imp->fn)) : std::string("NOT SELECTED (would be unknown)"));
+        }
+        r.loaded = info.start_entry.address() != 0;
+        r.imports_bound = bound.size() == expected_count && expected_found == static_cast<int>(expected_count) && all_selected;
+        out("m7a imports: bound={} expected={} matched={} all_selected={} -> {}", bound.size(), expected_count, expected_found, all_selected,
+            pf(r.imports_bound));
+
+        // ---- M7B.1: the differential control first (same dzn device), and the dzn counter ----
+        if (tri && r.imports_bound) {
+            if (auto *vk = dynamic_cast<renderer::vulkan::VKState *>(emuenv->renderer.get()))
+                control_pipeline(*vk);
+            out("m7b.1 dzn diagnostic counter vitox_dzn_pso_failures {} (value {})", dzn_pso_failures() ? "found" : "NOT EXPORTED",
+                dzn_pso_failures() ? *dzn_pso_failures() : -1);
+        }
+        // ---- run (Vita3K order: set_app, main thread, vblank thread, render thread) ----
+        if (r.imports_bound) {
+            emuenv->renderer->set_app(emuenv->io.title_id.c_str(), "eboot.bin");
+            main_thread = emuenv->kernel.create_thread(emuenv->mem, emuenv->io.title_id.c_str(), info.start_entry, SCE_KERNEL_DEFAULT_PRIORITY_USER,
+                SCE_KERNEL_CPU_MASK_USER_ALL, SCE_KERNEL_STACK_SIZE_USER_MAIN, nullptr);
+            if (main_thread) {
+                emuenv->main_thread_id = main_thread->id;
+                t_run = std::chrono::steady_clock::now();
+                const int sr = main_thread->start(0, Ptr<void>(0), true);
+                start_sync_thread(*emuenv);
+                renderer::start_render_thread(*emuenv->renderer, emuenv->display, emuenv->gxm, emuenv->mem, emuenv->cfg);
+                r.thread = sr >= 0;
+                out("m7a run: main thread id={} start={} | start_sync_thread (vblank) | renderer::start_render_thread -> {}", main_thread->id, sr, pf(r.thread));
+            }
+        }
+    } else {
+        out("m7a load_module('app0:eboot.bin') FAILED: {}", main_module_id);
+    }
+
+    // ---- guest runs: the UI thread pumps CoreWindow events and SAMPLES (read-only) the displayed guest framebuffer ----
+    uint64_t first_present_n = 0, last_present_n = 0;
+    bool pso_early_stop = false; // M7B.2: the M7B.1 stop rule fired (guest never reaches sceGxmTerminate)
+    std::chrono::steady_clock::time_point t_first_present, t_last_present;
+    std::set<uint32_t> colours;
+    unsigned samples = 0;
+    CpuSampler cpu;
+    cpu.ui = dup(GetCurrentThread());
+    if (r.thread) {
+        if (emuenv->renderer->render_thread)
+            cpu.render = dup(static_cast<HANDLE>(emuenv->renderer->render_thread->native_handle()));
+        if (emuenv->display.vblank_thread)
+            cpu.vblank = dup(static_cast<HANDLE>(emuenv->display.vblank_thread->native_handle()));
+        cpu.line(); // baseline
+        out("m7a host threads: ui tid={} render tid={} vblank tid={} (crash_log tid matches one of these)", GetCurrentThreadId(),
+            cpu.render ? GetThreadId(cpu.render) : 0, cpu.vblank ? GetThreadId(cpu.vblank) : 0);
+        auto next_sample = std::chrono::steady_clock::now();
+        volatile long *pso_failures = tri ? dzn_pso_failures() : nullptr;
+        while (!exited && std::chrono::steady_clock::now() - t_run < std::chrono::seconds(timeout_s)) {
+            pump();
+            if (pso_failures && *pso_failures > 0) {
+                // M7B.1 stop rule: a draw was contained by dzn (no PSO) - stop rendering now, no further frames
+                out("m7b.1 STOP: dzn contained {} draw(s) without a D3D12 pipeline state after {:.2f} s - stopping the render thread immediately",
+                    *pso_failures, std::chrono::duration<double>(std::chrono::steady_clock::now() - t_run).count());
+                renderer::stop_render_thread(*emuenv->renderer);
+                pso_early_stop = true;
+                break;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const uint64_t p = vitox_external_present_stats().presents_ok;
+            if (p && !first_present_n) {
+                first_present_n = p;
+                t_first_present = now;
+            }
+            if (p != last_present_n) {
+                last_present_n = p;
+                t_last_present = now;
+            }
+            if (now >= next_sample) {
+                next_sample = now + std::chrono::seconds(1);
+                DisplayFrameInfo f;
+                {
+                    std::lock_guard<std::mutex> guard(emuenv->display.display_info_mutex);
+                    f = emuenv->display.sce_frame;
+                }
+                if (!cpu.gxm_host && emuenv->gxm.display_host_thread.joinable())
+                    cpu.gxm_host = dup(static_cast<HANDLE>(emuenv->gxm.display_host_thread.native_handle()));
+                out("m7a {} at t={:.1f}s", cpu.line(), std::chrono::duration<double>(now - t_run).count());
+                if (f.base) {
+                    const uint32_t *px = Ptr<const uint32_t>(f.base.address()).get(emuenv->mem);
+                    const uint32_t c0 = px[0], cmid = px[static_cast<size_t>(f.image_size.y / 2) * f.pitch + f.image_size.x / 2];
+                    colours.insert(c0);
+                    if (++samples <= 6 || samples % 5 == 0)
+                        out("m7a sample t={:.1f}s: displayed guest fb 0x{:08X} {}x{} pitch {} | pixel(0,0)=0x{:08X} pixel(centre)=0x{:08X} | presents={} | vblank_count={}",
+                            std::chrono::duration<double>(now - t_run).count(), f.base.address(), f.image_size.x, f.image_size.y, f.pitch, c0, cmid, p,
+                            emuenv->display.vblank_count.load());
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    const double run_s = r.thread ? std::chrono::duration<double>(std::chrono::steady_clock::now() - t_run).count() : 0;
+    r.exited = exited;
+    r.exit_ok = exited && exit_code == 0;
+    snap("m7a_after_run");
+    out("m7a run end: guest exited={} exit_code=0x{:X} after {:.1f} s | distinct pixel(0,0) colours sampled={} over {} samples", exited.load(),
+        static_cast<uint32_t>(exit_code.load()), run_s, colours.size(), samples);
+
+    // ---- M7A.1 lifetime evidence: the displayed guest framebuffer must stay valid guest memory until the render and
+    //      display threads are gone (0.0.14.0: freed while still sce_frame -> access violation in the render thread)
+    const auto fb_state = [&](const char *when) {
+        DisplayFrameInfo f;
+        {
+            std::lock_guard<std::mutex> guard(emuenv->display.display_info_mutex);
+            f = emuenv->display.sce_frame;
+        }
+        const Address a = f.base.address();
+        const Address last = a ? a + f.pitch * 4 * static_cast<uint32_t>(f.image_size.y) - 1 : 0;
+        out("m7a lifetime [{}]: display.sce_frame=0x{:08X} {}x{} | guest memory valid first={} last={} | vblank_count={} | render thread {}", when, a,
+            f.image_size.x, f.image_size.y, a ? is_valid_addr(emuenv->mem, a) : false, a ? is_valid_addr(emuenv->mem, last) : false,
+            emuenv->display.vblank_count.load(), emuenv->renderer && emuenv->renderer->render_thread ? "running" : "stopped");
+    };
+    if (r.thread)
+        fb_state("guest exited (final handoff done by the guest)");
+
+    // ---- Vita3K shutdown order (app_init.cpp): renderer preclose, render thread, gxm, display ----
+    StepWatch watch;
+    watch.start();
+    if (r.thread) {
+        out("m7a {} (after guest exit, before shutdown)", cpu.line());
+        watch.begin("renderer->preclose_action");
+        emuenv->renderer->preclose_action();
+        watch.end();
+        watch.begin("renderer::stop_render_thread");
+        renderer::stop_render_thread(*emuenv->renderer);
+        watch.end();
+        fb_state("after stop_render_thread");
+        if (pso_early_stop) {
+            // M7B.2 DIAGNOSTIC early-stop shutdown hygiene only (normal guest runs never take this path): the guest never
+            // called sceGxmTerminate, so do what it does before the join - abort the display queue.
+            out("m7b.2 early-stop hygiene: gxm.display_queue.abort() before gxm.deinit (as sceGxmTerminate does)");
+            emuenv->gxm.display_queue.abort();
+            HANDLE h = nullptr;
+            if (emuenv->gxm.display_host_thread.joinable())
+                DuplicateHandle(GetCurrentProcess(), static_cast<HANDLE>(emuenv->gxm.display_host_thread.native_handle()), GetCurrentProcess(), &h,
+                    SYNCHRONIZE, FALSE, 0);
+            if (h && WaitForSingleObject(h, 2000) == WAIT_TIMEOUT) {
+                // still blocked in a sync-object wait (wishlist): release it the way sync-object destruction does
+                std::lock_guard<std::mutex> guard(emuenv->gxm.sync_objects_mutex);
+                out("m7b.2 early-stop hygiene: display host thread still blocked after abort -> marking {} sync object(s) being_deleted",
+                    emuenv->gxm.sync_objects.size());
+                for (SceGxmSyncObject *so : emuenv->gxm.sync_objects) {
+                    {
+                        std::lock_guard<std::mutex> so_guard(so->lock);
+                        so->being_deleted = true;
+                    }
+                    so->cond.notify_all();
+                }
+            }
+            if (h) {
+                out("m7b.2 early-stop hygiene: display host thread {}", WaitForSingleObject(h, 3000) == WAIT_OBJECT_0 ? "exited" : "STILL BLOCKED");
+                CloseHandle(h);
+            }
+        }
+        watch.begin("gxm.deinit");
+        emuenv->gxm.deinit();
+        watch.end();
+        fb_state("before display.deinit (vblank thread still running)");
+        watch.begin("display.deinit");
+        emuenv->display.deinit();
+        watch.end();
+    }
+    const VitoxExternalPresentStats s1 = vitox_external_present_stats();
+    r.presents = s1.presents_ok;
+    r.present_seconds = first_present_n ? std::chrono::duration<double>(t_last_present - t_first_present).count() : 0;
+    r.frames = r.present_seconds >= 30.0 && s1.submits_failed == 0 && s1.presents_failed == 0 && s1.presents_ok > 0 && s1.stalls == 0;
+    out("m7a renderer frames: presents ok={} failed={} submits ok={} failed={} over {:.1f} s ({:.1f} fps) | stalls={} | timeline last={} completed={} | other "
+        "vkQueueSubmit={} | LABELLED cpu_wait={} -> {}",
+        s1.presents_ok, s1.presents_failed, s1.submits_ok, s1.submits_failed, r.present_seconds,
+        r.present_seconds > 0 ? (last_present_n - first_present_n) / r.present_seconds : 0.0, s1.stalls, s1.last_value, s1.completed_value, s1.other_submits,
+        s1.cpu_wait_fallback, pf(r.frames));
+    r.gpu_draws = s1.cmd_draw_indexed;
+    r.pipelines = s1.pipelines_created;
+    r.shader_modules = s1.shader_modules;
+    r.vita3k_errors = g_vita3k_errors;
+    r.gpu = !tri || (s1.cmd_draw_indexed > 0 && s1.pipelines_created > 0 && s1.pipeline_failures == 0 && s1.shader_module_failures == 0 && g_vita3k_errors == 0);
+    out("m7b GPU: vkCmdDrawIndexed={} vkCmdDraw={} | vkCreateGraphicsPipelines ok={} failed={} | vkCreateShaderModule ok={} failed={} | [vita3k error] lines={} -> {}",
+        s1.cmd_draw_indexed, s1.cmd_draw, s1.pipelines_created, s1.pipeline_failures, s1.shader_modules, s1.shader_module_failures, g_vita3k_errors.load(),
+        pf(r.gpu));
+    out("m7b draw sequence (diagnostic): last presenter frame={} vkCmdDrawIndexed total at it={} | presenter frames with no new draw={} (first frame {}, last "
+        "frame {})",
+        s1.last_present_frame, s1.draws_at_last_present, s1.presents_without_new_draw, s1.first_no_draw_frame, s1.last_no_draw_frame);
+
+    // ---- imports actually invoked ----
+    VitoxImportStat stats[64];
+    const unsigned n = vitox_import_stats(stats, 64);
+    unsigned unknown = 0, total = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        total += stats[i].calls;
+        unknown += stats[i].resolved ? 0 : 1;
+        if (stats[i].nid == kNidSetFrameBuf)
+            r.setframebuf_calls = stats[i].calls;
+        if (stats[i].nid == (tri ? kNidDraw : kNidTransferFill))
+            r.fill_calls = stats[i].calls;
+        if (stats[i].nid == kNidWaitVblank)
+            r.vblank_calls = stats[i].calls;
+        out("m7a invoked: nid=0x{:08X} {} calls={} -> {}", stats[i].nid, stats[i].name ? stats[i].name : import_name(stats[i].nid), stats[i].calls,
+            stats[i].resolved ? fmt::format("REAL ImportFn={}", reinterpret_cast<const void *>(stats[i].fn)) : std::string("UNKNOWN (not selected): FAIL"));
+    }
+    bool gxm_init_called = false;
+    uint64_t begin_scene = 0, queue_add = 0, reserve_uniform = 0, set_uniform = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        gxm_init_called |= stats[i].nid == kNidGxmInit && stats[i].calls == 1;
+        if (stats[i].nid == kNidBeginScene)
+            begin_scene = stats[i].calls;
+        if (stats[i].nid == kNidQueueAdd)
+            queue_add = stats[i].calls;
+        if (stats[i].nid == kNidReserveUniform)
+            reserve_uniform = stats[i].calls;
+        if (stats[i].nid == kNidSetUniform)
+            set_uniform = stats[i].calls;
+    }
+    r.imports_real = n == expected_count && unknown == 0 && emuenv->missing_nids.empty();
+    // M7A.1: + 1 final SetFrameBuf handoff and 2 final vblank waits
+    r.gxm_calls = tri ? gxm_init_called && r.fill_calls == 2100 && begin_scene == 2100 && queue_add == 2100 && reserve_uniform == 2100 && set_uniform == 2100
+                            && r.setframebuf_calls == 2100 && r.vblank_calls == 2102 // display callback per frame + 2 final vblanks
+                      : gxm_init_called && r.fill_calls == 2 * 2100 && r.setframebuf_calls == 2101 && r.vblank_calls == 2102;
+    if (tri)
+        out("m7b guest draw path: sceGxmBeginScene={} sceGxmDraw={} ReserveVertexDefaultUniformBuffer={} SetUniformDataF={} DisplayQueueAddEntry={} "
+            "(display callback) SetFrameBuf={} WaitVblankStart={}",
+            begin_scene, r.fill_calls, reserve_uniform, set_uniform, queue_add, r.setframebuf_calls, r.vblank_calls);
+    out("m7a invoked: distinct NIDs={} total calls={} unknown={} emuenv.missing_nids={} | probe-side implementations: NONE -> {} | guest GXM/display: "
+        "TransferFill={} SetFrameBuf={} WaitVblankStart={} -> {}",
+        n, total, unknown, emuenv->missing_nids.size(), pf(r.imports_real), r.fill_calls, r.setframebuf_calls, r.vblank_calls, pf(r.gxm_calls));
+
+    // ---- counters ----
+    const unsigned sws = vitox_swscale_disabled_count(VITOX_SWS_YUV420_TO_RGB) + vitox_swscale_disabled_count(VITOX_SWS_SURFACE_SYNC_RGB24)
+        + vitox_swscale_disabled_count(VITOX_SWS_TRANSFER_DOWNSCALE) + vitox_swscale_disabled_count(VITOX_SWS_UNEXPECTED_CONTEXT);
+    const unsigned ticks = vitox_sdl_timer_report().get_ticks;
+    r.counters_zero = sws == 0 && ticks == 0;
+    out("m7a counters: swscale-disabled hits={} | SDL_GetTicks calls={} | vblank input refresh skipped (compiled out, user-approved): touch={} motion={} | "
+        "display vblank_count={} -> {}",
+        sws, ticks, vitox_vblank_input_skipped_count(VITOX_VBLANK_TOUCH), vitox_vblank_input_skipped_count(VITOX_VBLANK_MOTION),
+        emuenv->display.vblank_count.load(), pf(r.counters_zero));
+
+    // ---- sentinel written by the guest through the real Vita IO layer ----
+    const std::string sentinel = read_all(s_result);
+    std::map<std::string, std::string> kv;
+    for (size_t pos = 0; pos < sentinel.size();) {
+        const size_t nl = sentinel.find('\n', pos);
+        const std::string line = sentinel.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+        const size_t eq = line.find('=');
+        if (eq != std::string::npos)
+            kv[line.substr(0, eq)] = line.substr(eq + 1);
+        pos = nl == std::string::npos ? sentinel.size() : nl + 1;
+    }
+    r.sentinel = tri ? kv["VITOX_HOMEBREW"] == "VITOX0003" && kv["VITOX_HOMEBREW_PASS"] == "1" && kv["FRAMES"] == "2100" && kv["DRAWS"] == "2100"
+                     && kv["SCENE_FAIL"] == "0" && kv["UNIFORM_FAIL"] == "0" && kv["DRAW_FAIL"] == "0" && kv["QUEUE_FAIL"] == "0"
+                     && kv["DISPLAY_CALLBACKS"] == "2100" && kv["QUEUE_FINISH"] == "0x00000000" && kv["FINAL_VBLANK_FAIL"] == "0"
+                     && kv["GXM_TERMINATE"] == "0x00000000" && kv["PROGRAM_CHECK_V"] == "0x00000000" && kv["PROGRAM_CHECK_F"] == "0x00000000"
+                     && kv["CREATE_VERTEX_PROGRAM"] == "0x00000000" && kv["CREATE_FRAGMENT_PROGRAM"] == "0x00000000" && kv["EXIT_CODE"] == "0x00000000"
+                     : kv["VITOX_HOMEBREW"] == "VITOX0002" && kv["VITOX_HOMEBREW_PASS"] == "1" && kv["FRAMES"] == "2100" && kv["FILL_FAIL"] == "0"
+        && kv["SETBUF_FAIL"] == "0" && kv["VBLANK_FAIL"] == "0" && kv["GXM_INITIALIZE"] == "0x00000000" && kv["EXIT_CODE"] == "0x00000000"
+        && kv["FINAL_SETBUF"] == "0x00000000" && kv["FINAL_VBLANK_FAIL"] == "0" && kv["GXM_TERMINATE"] == "0x00000000" && kv["FB_KEPT_UNTIL_EXIT"] == "1";
+    std::string shown = sentinel;
+    for (auto &c : shown)
+        if (c == '\n')
+            c = ';';
+    out("m7a sentinel '{}' {} B: [{}] -> {}", u8(s_result), sentinel.size(), shown, pf(r.sentinel));
+
+    // ---- cleanup through Vita3K ----
+    // the probe's own ThreadStatePtr must go before the kernel does (0.0.14.2: released at return, after ~EmuEnvState,
+    // ~ThreadState blocked and the app never got past this probe)
+    main_thread.reset();
+    watch.begin("guest thread teardown (exit_delete + wait)");
+    {
+        std::lock_guard<std::mutex> lock(emuenv->kernel.mutex);
+        for (auto &[_, t] : emuenv->kernel.threads)
+            t->exit_delete(false);
+    }
+    bool threads_gone = false;
+    {
+        std::unique_lock<std::mutex> lock(emuenv->kernel.mutex);
+        threads_gone = emuenv->kernel.thread_deleted_cond.wait_for(lock, std::chrono::seconds(5), [&] { return emuenv->kernel.threads.empty(); });
+    }
+    watch.end();
+    watch.begin("unload_module");
+    const int unload_res = main_module_id >= 0 ? unload_module(*emuenv, main_module_id) : -1;
+    watch.end();
+    if (emuenv->renderer) {
+        watch.begin("renderer->cleanup + ~VKState");
+        emuenv->renderer->cleanup();
+        emuenv->renderer.reset();
+        watch.end();
+    }
+    if (threads_gone) {
+        // the kept framebuffer memblock is released here, with the guest process: render + vblank threads are gone
+        watch.begin("kernel.deinit + deinit_mem (releases the kept framebuffer)");
+        emuenv->kernel.deinit(emuenv->mem);
+        deinit_mem(emuenv->mem);
+        watch.end();
+    }
+    watch.stop();
+    vitox_set_external_presenter(nullptr);
+    snap("m7a_after_renderer_destroyed");
+    if (threads_gone) {
+        io_deinit(emuenv->io);
+        delete emuenv;
+    }
+    snap("m7a_after_cleanup");
+    // Vita3K's process-wide VEH captured the freed MemState: re-anchor it (as after M4.1/M5B/M6C)
+    auto *veh_anchor = new MemState;
+    if (init(*veh_anchor, false))
+        deinit_mem(*veh_anchor);
+    r.cleanup = threads_gone && (main_module_id < 0 || unload_res == 0);
+    out("m7a cleanup: guest threads deleted={} unload_module={} VKState cleanup + ~EmuEnvState={} -> {}", threads_gone, unload_res, threads_gone, pf(r.cleanup));
+
+    // ---- root safety: remove the sentinel (created by this run), keep the app install ----
+    sfs::remove(s_result, ec);
+    if (!result_dir_preexisting)
+        sfs::remove(s_result_dir, ec);
+    const auto data_after = names(s_vita_fs / "ux0" / "data");
+    r.root_safety = data_after == data_before && sfs::exists(s_app / "eboot.bin");
+    out("m7a root safety: ux0\\data entries before={} after={} | app install kept at '{}' -> {}", data_before.size(), data_after.size(), u8(s_app),
+        pf(r.root_safety));
+    out("{} end: installed={} sfo={} renderer={} loaded={} imports_bound={} thread={} exited={} exit_ok={} imports_real={} gxm_calls={} frames={} gpu={} "
+        "sentinel={} counters_zero={} cleanup={} root_safety={}",
+        tri ? "M7B" : "M7A", r.installed, r.sfo, r.renderer, r.loaded, r.imports_bound, r.thread, r.exited, r.exit_ok, r.imports_real, r.gxm_calls, r.frames,
+        r.gpu, r.sentinel, r.counters_zero, r.cleanup, r.root_safety);
+    silence_log();
+    return r;
+}

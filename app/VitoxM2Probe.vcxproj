@@ -1,0 +1,140 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{3B7C2E41-6F0A-4D8E-9C51-7A2D0E4B1F01}</ProjectGuid>
+    <RootNamespace>VitoxM1Probe</RootNamespace>
+    <ProjectName>VitoxM1Probe</ProjectName>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>true</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.19041.0</WindowsTargetPlatformMinVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)out\bin\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)out\obj\$(Configuration)\</IntDir>
+    <TargetName>VitoxM1Probe</TargetName>
+    <!-- Packaging: sideload-only, x64, no bundle. Identity lives in Package.appxmanifest. -->
+    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
+    <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
+    <AppxBundle>Never</AppxBundle>
+    <AppxBundlePlatforms>x64</AppxBundlePlatforms>
+    <AppxPackageDir>$(MSBuildThisFileDirectory)out\AppPackages\</AppxPackageDir>
+    <AppxSymbolPackageEnabled>true</AppxSymbolPackageEnabled>
+    <GenerateAppInstallerFile>false</GenerateAppInstallerFile>
+    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+    <!-- Same signing identity as M1 (CN=Vitox); the subject determines the PFN. -->
+    <PackageCertificateKeyFile>C:\Vitox\Vitox-M1\cert\Vitox_TestSigning.pfx</PackageCertificateKeyFile>
+    <PackageCertificateThumbprint>A7006C01926EBB49D9479190F6AC9B61DD5F5932</PackageCertificateThumbprint>
+    <GenerateTestArtifacts>true</GenerateTestArtifacts>
+    <!-- M3: one consistent WindowsStore dependency set from the Vitox-M3 core build (Release, /MD):
+         real Vita3K core slice (vitox_core) + the same W^X-shimmed Dynarmic + Vita3K's fmt/spdlog/capstone. -->
+    <CoreOut>C:\Vitox\Vitox-M3\out\core</CoreOut>
+    <DynLib>$(CoreOut)\dynarmic</DynLib>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <CompileAsWinRT>false</CompileAsWinRT>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <WarningLevel>Level4</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalOptions>/utf-8 /bigobj /permissive- %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>C:\Vitox\Vita3K\external\VulkanMemoryAllocator-Hpp\Vulkan-Headers\include;C:\Vitox\Vita3K\external\dynarmic\src;$(CoreOut)\vitox-patched;C:\Vitox\Vitox-M3\core-probe;C:\Vitox\Vitox-M3\compat;C:\Vitox\Vita3K\external\miniz;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateWindowsMetadata>false</GenerateWindowsMetadata>
+      <GenerateDebugInformation>DebugFull</GenerateDebugInformation>
+      <AdditionalDependencies>$(CoreOut)\Release\vitox_m8c_firmware.lib;$(CoreOut)\Release\vitox_pfs.lib;$(CoreOut)\Release\vitox_m8a_launcher.lib;$(CoreOut)\Release\vitox_m7b_probe.lib;$(CoreOut)\Release\vitox_m7b_openshacccg.lib;$(CoreOut)\Release\vitox_m7a_probe.lib;$(CoreOut)\Release\vitox_m7a_gxm.lib;$(CoreOut)\Release\vitox_m6c_probe.lib;$(CoreOut)\Release\vitox_m6b_renderer.lib;$(CoreOut)\Release\vitox_m6b2_renderer_deps.lib;$(CoreOut)\Release\vitox_m6b2_shader.lib;$(CoreOut)\ext\glslang\SPIRV\Release\SPIRV.lib;$(CoreOut)\ext\glslang\glslang\Release\glslang.lib;$(CoreOut)\ext\SPIRV-Cross\Release\spirv-cross-glsl.lib;$(CoreOut)\ext\SPIRV-Cross\Release\spirv-cross-core.lib;$(CoreOut)\Release\vitox_hle.lib;C:\Vitox\toolchain\ffmpeg-n7.1.1-uwp\lib\libavformat.a;C:\Vitox\toolchain\ffmpeg-n7.1.1-uwp\lib\libavcodec.a;C:\Vitox\toolchain\ffmpeg-n7.1.1-uwp\lib\libswscale.a;C:\Vitox\toolchain\ffmpeg-n7.1.1-uwp\lib\libswresample.a;C:\Vitox\toolchain\ffmpeg-n7.1.1-uwp\lib\libavutil.a;$(CoreOut)\Release\vitox_dlmalloc.lib;$(CoreOut)\Release\vitox_hostio.lib;$(CoreOut)\Release\vitox_core.lib;$(CoreOut)\Release\vitox_emuenv.lib;$(CoreOut)\Release\vitox_boost_filesystem.lib;$(CoreOut)\ext\yaml-cpp\Release\yaml-cpp.lib;$(CoreOut)\ext\pugixml\Release\pugixml.lib;bcrypt.lib;$(CoreOut)\Release\miniz.lib;$(DynLib)\src\dynarmic\Release\dynarmic.lib;$(DynLib)\externals\mcl\src\Release\mcl.lib;$(DynLib)\externals\zydis\Release\Zydis.lib;$(DynLib)\externals\zydis\zycore\Release\Zycore.lib;$(CoreOut)\ext\capstone\capstone.dir\Release\capstone.lib;$(CoreOut)\ext\spdlog\Release\spdlog.lib;$(CoreOut)\ext\fmt\Release\fmt.lib;d3d11.lib;d3d12.lib;dxgi.lib;d2d1.lib;dwrite.lib;windowscodecs.lib;WindowsApp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="src\common.h" />
+    <ClCompile Include="src\app.cpp" />
+    <ClCompile Include="src\log.cpp" />
+    <ClCompile Include="src\probe_api.cpp" />
+    <ClCompile Include="src\probe_fs.cpp" />
+    <ClCompile Include="src\probe_jit.cpp" />
+    <ClCompile Include="src\probe_mem.cpp" />
+    <ClCompile Include="src\probe_dynarmic.cpp" />
+    <ClCompile Include="src\probe_veh.cpp" />
+    <ClCompile Include="src\probe_unwind.cpp" />
+    <ClCompile Include="src\probe_fastmem.cpp" />
+    <ClCompile Include="src\probe_core.cpp" />
+    <ClCompile Include="src\probe_io.cpp" />
+    <ClCompile Include="src\probe_homebrew.cpp" />
+    <ClCompile Include="src\probe_dzn.cpp" />
+    <ClCompile Include="src\probe_m6b.cpp" />
+    <ClCompile Include="src\probe_m6b1.cpp" />
+    <ClCompile Include="src\probe_m6c.cpp" />
+    <ClCompile Include="src\host_input.cpp" />
+    <ClCompile Include="src\host_text.cpp" />
+    <ClCompile Include="src\launcher_ui.cpp" />
+    <ClCompile Include="src\overlay_panel.cpp" />
+    <ClCompile Include="src\steamgriddb.cpp" />
+    <ClCompile Include="src\graphics_config.cpp" />
+    <ClCompile Include="src\perf_stats.cpp" />
+    <ClCompile Include="src\library_install.cpp" />
+    <ClCompile Include="src\game_config.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <AppxManifest Include="Package.appxmanifest"><SubType>Designer</SubType></AppxManifest>
+    <Image Include="Assets\*.png" /><!-- 0.0.31.0: the Vitox logo at every scale / target size -->
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 0.0.17.0 (M8A): no homebrew is packaged any more; apps are selected at run time from the user-managed
+         D:\DevelopmentFiles\Vitox\homebrew root (the VITOX0001/2/3 bring-up apps stay in homebrew\ and Vitox-Homebrew). -->
+    <!-- 0.0.11.0 (M6A): Mesa 26.2.5 Dozen built for WindowsStore (C:\Vitox\Vitox-M6) + Windows SDK redist DXIL validator -->
+    <None Include="m6a\vulkan_dzn.dll"><DeploymentContent>true</DeploymentContent><Link>vulkan_dzn.dll</Link></None>
+    <None Include="m6a\dxil.dll"><DeploymentContent>true</DeploymentContent><Link>dxil.dll</Link></None>
+    <!-- 0.0.13.0 (M6C): Vita3K's prebuilt built-in SPIR-V (vita3k/shaders-builtin), loaded from static_assets -->
+    <None Include="m6c\shaders-builtin\overlay\overlay.frag.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\overlay\overlay.frag.spv</Link></None>
+    <None Include="m6c\shaders-builtin\overlay\overlay.vert.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\overlay\overlay.vert.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\fsr_filter_easu.comp.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\fsr_filter_easu.comp.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\fsr_filter_rcas.comp.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\fsr_filter_rcas.comp.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\render_main.frag.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\render_main.frag.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\render_main.vert.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\render_main.vert.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\render_main_bicubic.frag.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\render_main_bicubic.frag.spv</Link></None>
+    <None Include="m6c\shaders-builtin\vulkan\render_main_fxaa.frag.spv"><DeploymentContent>true</DeploymentContent><Link>shaders-builtin\vulkan\render_main_fxaa.frag.spv</Link></None>
+    <!-- 0.0.32.0: trophy-unlocked banner grade icons (upstream vita3k/icons), read from static_assets\icons -->
+    <None Include="m6c\icons\bronze.png"><DeploymentContent>true</DeploymentContent><Link>icons\bronze.png</Link></None>
+    <None Include="m6c\icons\silver.png"><DeploymentContent>true</DeploymentContent><Link>icons\silver.png</Link></None>
+    <None Include="m6c\icons\gold.png"><DeploymentContent>true</DeploymentContent><Link>icons\gold.png</Link></None>
+    <None Include="m6c\icons\platinum.png"><DeploymentContent>true</DeploymentContent><Link>icons\platinum.png</Link></None>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

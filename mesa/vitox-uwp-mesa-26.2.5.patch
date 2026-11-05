@@ -1,0 +1,1475 @@
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/util/u_debug_symbol.c b/C:/Vitox/Vitox-M6/mesa/src/util/u_debug_symbol.c
+index 5f8da42..4749387 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/util/u_debug_symbol.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/util/u_debug_symbol.c
+@@ -42,7 +42,8 @@
+ #include "util/hash_table.h"
+ 
+ 
+-#if DETECT_OS_WINDOWS
++/* Vitox (WindowsStore): DbgHelp is desktop-only; addresses are printed instead (as on other OSes). */
++#if DETECT_OS_WINDOWS && !defined(VITOX_UWP)
+ 
+ #include <windows.h>
+ #include <stddef.h>
+@@ -238,7 +239,7 @@ debug_symbol_name_dbghelp(const void *addr, char* buf, unsigned size)
+ void
+ debug_symbol_name(const void *addr, char* buf, unsigned size)
+ {
+-#if DETECT_OS_WINDOWS
++#if DETECT_OS_WINDOWS && !defined(VITOX_UWP)
+    if (debug_symbol_name_dbghelp(addr, buf, size)) {
+       return;
+    }
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/util/u_debug.c b/C:/Vitox/Vitox-M6/mesa/src/util/u_debug.c
+index 45ea231..38c3b2e 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/util/u_debug.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/util/u_debug.c
+@@ -87,7 +87,7 @@ debug_disable_win32_error_dialogs(void)
+     */
+    UINT uMode = SetErrorMode(0);
+    SetErrorMode(uMode);
+-#ifndef _GAMING_XBOX
++#if !defined(_GAMING_XBOX) && !defined(VITOX_UWP) /* Vitox: SEM_* are desktop-only, as on Xbox GDK */
+    if (uMode & SEM_FAILCRITICALERRORS) {
+       /* Disable assertion failure message box.
+        * http://msdn.microsoft.com/en-us/library/sas1dkb2.aspx
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/compiler/dxil_validator.cpp b/C:/Vitox/Vitox-M6/mesa/src/microsoft/compiler/dxil_validator.cpp
+index fab8c85..17cd13d 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/compiler/dxil_validator.cpp
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/compiler/dxil_validator.cpp
+@@ -107,7 +107,7 @@ get_validator_version(IDxcValidator *val)
+    return NO_DXIL_VALIDATION;
+ }
+ 
+-#ifndef _GAMING_XBOX
++#if !defined(_GAMING_XBOX) && !defined(VITOX_UWP) /* Vitox: version.lib (GetFileVersionInfo) is desktop-only */
+ static uint64_t
+ get_dll_version(HMODULE mod)
+ {
+@@ -152,7 +152,7 @@ static enum dxil_validator_version
+ get_filtered_validator_version(HMODULE mod, enum dxil_validator_version raw)
+ {
+    switch (raw) {
+-#ifndef _GAMING_XBOX
++#if !defined(_GAMING_XBOX) && !defined(VITOX_UWP) /* Vitox: ships the SDK 10.0.26100 redist dxil.dll, not the 101.5.2005.60 build */
+    case DXIL_VALIDATOR_1_6: {
+       uint64_t dxil_version = get_dll_version(mod);
+       static constexpr uint64_t known_bad_version =
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_cmd_buffer.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_cmd_buffer.c
+index fd85f88..adaa606 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_cmd_buffer.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_cmd_buffer.c
+@@ -1078,8 +1078,17 @@ dzn_EndCommandBuffer(VkCommandBuffer commandBuffer)
+       dzn_cmd_buffer_gather_events(cmdbuf);
+       dzn_cmd_buffer_gather_queries(cmdbuf);
+       HRESULT hres = ID3D12GraphicsCommandList1_Close(cmdbuf->cmdlist);
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only - an invalid recorded call surfaces here as a failed Close() */
++      if (FAILED(hres)) {
++         __vk_errorf(&cmdbuf->vk, VK_ERROR_OUT_OF_HOST_MEMORY, __FILE__, __LINE__,
++                     "VITOX ID3D12GraphicsCommandList::Close hr=0x%08lx", (unsigned long)hres);
++         if (cmdbuf->vk.record_result == VK_SUCCESS)
++            cmdbuf->vk.record_result = VK_ERROR_OUT_OF_HOST_MEMORY;
++      }
++#else
+       if (FAILED(hres))
+          vk_command_buffer_set_error(&cmdbuf->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
++#endif
+    }
+ 
+    return vk_command_buffer_end(&cmdbuf->vk);
+@@ -1814,7 +1823,26 @@ dzn_cmd_buffer_alloc_internal_buf(struct dzn_cmd_buffer *cmdbuf,
+                                             &IID_ID3D12Resource,
+                                             (void **)&res);
+    if (FAILED(hres)) {
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only - report the exact D3D12 request and whether it works without UAV */
++      ID3D12Resource *vitox_retry = NULL;
++      D3D12_RESOURCE_DESC vitox_rdesc = rdesc;
++      vitox_rdesc.Flags = D3D12_RESOURCE_FLAG_NONE;
++      HRESULT vitox_hr2 = ID3D12Device1_CreateCommittedResource(device->dev, &hprops, D3D12_HEAP_FLAG_NONE, &vitox_rdesc,
++                                                                init_state, NULL, &IID_ID3D12Resource, (void **)&vitox_retry);
++      if (vitox_retry)
++         ID3D12Resource_Release(vitox_retry);
++      __vk_errorf(&cmdbuf->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY, __FILE__, __LINE__,
++                  "VITOX internal_buf CreateCommittedResource hr=0x%08lx bucket=%d heap_type=%d -> custom(Type=%d CPUPage=%d Pool=%d) "
++                  "size=%u (req %u) align=%llu flags=0x%x(ALLOW_UNORDERED_ACCESS) init_state=0x%x | same without UAV flag: hr=0x%08lx",
++                  (unsigned long)hres, (int)bucket, (int)heap_type, (int)hprops.Type, (int)hprops.CPUPageProperty,
++                  (int)hprops.MemoryPoolPreference, alloc_size, size, (unsigned long long)rdesc.Alignment, (unsigned)rdesc.Flags,
++                  (unsigned)init_state, (unsigned long)vitox_hr2);
++      if (cmdbuf->vk.record_result == VK_SUCCESS)
++         cmdbuf->vk.record_result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++#else
+       return vk_command_buffer_set_error(&cmdbuf->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++#endif
+    }
+ 
+    struct dzn_internal_resource *entry =
+@@ -3229,7 +3257,13 @@ dzn_cmd_buffer_update_pipeline(struct dzn_cmd_buffer *cmdbuf, uint32_t bindpoint
+          dzn_graphics_pipeline_get_state(gfx, &cmdbuf->state.pipeline_variant);
+          if (gfx->multiview.native_view_instancing)
+             view_instance_mask = gfx->multiview.view_mask;
++#ifdef VITOX_UWP /* Vitox M6B.2: ViewInstancingTier 0 (Xbox) rejects SetViewInstanceMask and Close() fails with E_FAIL. Without
++                  native view instancing no PSO carries a mask, so there is nothing to reset on such hardware. */
++         else if (container_of(device->vk.physical, struct dzn_physical_device, vk)->options3.ViewInstancingTier >
++                  D3D12_VIEW_INSTANCING_TIER_NOT_SUPPORTED)
++#else
+          else
++#endif
+             view_instance_mask = 1;
+ 
+          if (gfx->zsa.dynamic_depth_bias && gfx->use_gs_for_polygon_mode_point)
+@@ -3728,13 +3762,40 @@ dzn_cmd_buffer_triangle_fan_rewrite_index(struct dzn_cmd_buffer *cmdbuf,
+    return VK_SUCCESS;
+ }
+ 
+-static void
++#ifdef VITOX_UWP
++#include "vitox_pso_diag.h" /* Vitox M7B.1 */
++#endif
++
++/* Vitox M7B.1: returns false (VITOX_UWP only) when the draw must not reach D3D12 - see the containment below */
++static bool
+ dzn_cmd_buffer_prepare_draw(struct dzn_cmd_buffer *cmdbuf, bool indexed)
+ {
+    if (indexed)
+       dzn_cmd_buffer_update_ibview(cmdbuf);
+ 
+    dzn_cmd_buffer_update_pipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS);
++#ifdef VITOX_UWP
++   {
++      static int vitox_draws_logged;
++      const struct dzn_pipeline *bound = cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].pipeline;
++      if (vitox_draws_logged < 4 || !cmdbuf->state.pipeline) {
++         ++vitox_draws_logged;
++         fprintf(stderr, "[vitox-pso] prepare_draw: bound pipeline %p (state %p) | cmdbuf->state.pipeline before update_viewports=%p\n", (void *)bound,
++                 bound ? (void *)bound->state : NULL, (void *)cmdbuf->state.pipeline);
++         fflush(stderr);
++      }
++      /* DIAGNOSTIC CONTAINMENT (M7B.1, not a behavioural fix): no ID3D12PipelineState was applied, so this draw is not
++       * issued to D3D12 (it would dereference the NULL pipeline below). Counted; the Vitox probe stops rendering on it. */
++      if (!cmdbuf->state.pipeline) {
++         const long n = InterlockedIncrement(&vitox_dzn_pso_failures);
++         if (n <= 4) {
++            fprintf(stderr, "[vitox-pso] DIAGNOSTIC CONTAINMENT: draw #%ld skipped - no D3D12 pipeline state applied (vitox_dzn_pso_failures=%ld)\n", n, n);
++            fflush(stderr);
++         }
++         return false;
++      }
++   }
++#endif
+    dzn_cmd_buffer_update_heaps(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    dzn_cmd_buffer_update_sysvals(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    dzn_cmd_buffer_update_viewports(cmdbuf);
+@@ -3749,6 +3810,7 @@ dzn_cmd_buffer_prepare_draw(struct dzn_cmd_buffer *cmdbuf, bool indexed)
+    /* Reset the dirty states */
+    cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].dirty &= DZN_CMD_BINDPOINT_DIRTY_HEAPS;
+    cmdbuf->state.dirty = 0;
++   return true;
+ }
+ 
+ static uint32_t
+@@ -4085,7 +4147,7 @@ dzn_cmd_buffer_indirect_draw(struct dzn_cmd_buffer *cmdbuf,
+       cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].dirty |=
+          DZN_CMD_BINDPOINT_DIRTY_SYSVALS;
+ 
+-      dzn_cmd_buffer_prepare_draw(cmdbuf, indexed);
++      if (dzn_cmd_buffer_prepare_draw(cmdbuf, indexed)) /* Vitox M7B.1: false only in the VITOX_UWP containment */
+ 
+       ID3D12GraphicsCommandList1_ExecuteIndirect(cmdbuf->cmdlist, cmdsig,
+                                                  max_draw_count,
+@@ -5300,7 +5362,7 @@ dzn_CmdDraw(VkCommandBuffer commandBuffer,
+          cmdbuf->state.sysvals.gfx.view_index = view;
+          cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].dirty |=
+             DZN_CMD_BINDPOINT_DIRTY_SYSVALS;
+-         dzn_cmd_buffer_prepare_draw(cmdbuf, true);
++         if (dzn_cmd_buffer_prepare_draw(cmdbuf, true)) /* Vitox M7B.1 */
+          ID3D12GraphicsCommandList1_DrawIndexedInstanced(cmdbuf->cmdlist, vertexCount, instanceCount, 0,
+                                                 firstVertex, firstInstance);
+       }
+@@ -5316,7 +5378,7 @@ dzn_CmdDraw(VkCommandBuffer commandBuffer,
+          cmdbuf->state.sysvals.gfx.view_index = view;
+          cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].dirty |=
+             DZN_CMD_BINDPOINT_DIRTY_SYSVALS;
+-         dzn_cmd_buffer_prepare_draw(cmdbuf, false);
++         if (dzn_cmd_buffer_prepare_draw(cmdbuf, false)) /* Vitox M7B.1 */
+          ID3D12GraphicsCommandList1_DrawInstanced(cmdbuf->cmdlist, vertexCount, instanceCount,
+                                           firstVertex, firstInstance);
+       }
+@@ -5394,7 +5456,7 @@ dzn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
+       cmdbuf->state.bindpoint[VK_PIPELINE_BIND_POINT_GRAPHICS].dirty |=
+          DZN_CMD_BINDPOINT_DIRTY_SYSVALS;
+ 
+-      dzn_cmd_buffer_prepare_draw(cmdbuf, true);
++      if (dzn_cmd_buffer_prepare_draw(cmdbuf, true)) /* Vitox M7B.1 */
+       ID3D12GraphicsCommandList1_DrawIndexedInstanced(cmdbuf->cmdlist, indexCount, instanceCount, firstIndex,
+                                             vertexOffset, firstInstance);
+    }
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_descriptor_set.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_descriptor_set.c
+index c8821c9..d0a39cd 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_descriptor_set.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_descriptor_set.c
+@@ -938,9 +938,13 @@ dzn_descriptor_heap_init(struct dzn_descriptor_heap *heap,
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+    };
+ 
+-   if (FAILED(ID3D12Device1_CreateDescriptorHeap(device->dev, &desc,
+-                                                 &IID_ID3D12DescriptorHeap,
+-                                                 (void **)&heap->heap))) {
++   HRESULT vitox_hr = ID3D12Device1_CreateDescriptorHeap(device->dev, &desc, &IID_ID3D12DescriptorHeap, (void **)&heap->heap);
++   if (FAILED(vitox_hr)) {
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only */
++      return vk_errorf(device, shader_visible ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_ERROR_OUT_OF_HOST_MEMORY,
++                       "VITOX CreateDescriptorHeap hr=0x%08lx type=%d count=%u shader_visible=%d",
++                       (unsigned long)vitox_hr, (int)type, (unsigned)desc_count, (int)shader_visible);
++#endif
+       return vk_error(device,
+                       shader_visible ?
+                       VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_ERROR_OUT_OF_HOST_MEMORY);
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_device.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_device.c
+index 4a4dde5..f99044e 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_device.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_device.c
+@@ -22,6 +22,7 @@
+  */
+ 
+ #include "dzn_private.h"
++#include "vitox_pso_diag.h" /* Vitox M7B.2 */
+ 
+ #include "vk_alloc.h"
+ #include "vk_common_entrypoints.h"
+@@ -1823,6 +1824,7 @@ dzn_instance_create(const VkInstanceCreateInfo *pCreateInfo,
+       }
+    }
+ 
++#ifndef VITOX_UWP /* Vitox: SHGetFolderPath (shell) is desktop-only; DZN_DEBUG=redirect is unavailable */
+    if (instance->debug_flags & DZN_DEBUG_REDIRECTS) {
+       char home[MAX_PATH], path[MAX_PATH];
+       if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_PROFILE, NULL, 0, home))) {
+@@ -1832,6 +1834,7 @@ dzn_instance_create(const VkInstanceCreateInfo *pCreateInfo,
+          freopen(path, "w", stdout);
+       }
+    }
++#endif
+ #endif
+ 
+    bool missing_validator = false;
+@@ -2066,6 +2069,14 @@ dzn_queue_submit(struct vk_queue *q,
+    }
+ 
+    ID3D12CommandQueue_ExecuteCommandLists(queue->cmdqueue, info->command_buffer_count, cmdlists);
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only */
++   {
++      HRESULT vitox_removed = ID3D12Device_GetDeviceRemovedReason(device->dev);
++      if (FAILED(vitox_removed))
++         vk_errorf(device, VK_ERROR_DEVICE_LOST, "VITOX device removed right after ExecuteCommandLists(%u): reason=0x%08lx",
++                   info->command_buffer_count, (unsigned long)vitox_removed);
++   }
++#endif
+ 
+    for (uint32_t i = 0; i < info->command_buffer_count; i++) {
+       struct dzn_cmd_buffer* cmd_buffer =
+@@ -2496,6 +2507,9 @@ dzn_device_create_root_sig(struct dzn_device *device,
+                                      &IID_ID3D12RootSignature,
+                                      (void **)&root_sig);
+    ID3D10Blob_Release(sig);
++#ifdef VITOX_UWP /* Vitox M7B.2: logging only (root-signature layout for the PSO bisect report) */
++   vitox_pso_root_sig_created(desc, root_sig);
++#endif
+    return root_sig;
+ }
+ 
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_pipeline.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_pipeline.c
+index 65ccc0e..467139d 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_pipeline.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_pipeline.c
+@@ -39,6 +39,9 @@
+ #include "vk_pipeline_cache.h"
+ 
+ #include "util/u_debug.h"
++#ifdef VITOX_UWP
++#include "vitox_pso_diag.h" /* Vitox M7B.1: logging-only PSO diagnostics */
++#endif
+ 
+ #define d3d12_pipeline_state_stream_new_desc(__stream, __maxstreamsz, __id, __type, __desc) \
+    __type *__desc; \
+@@ -420,11 +423,18 @@ dzn_pipeline_compile_shader(struct dzn_device *device,
+       container_of(device->vk.physical, struct dzn_physical_device, vk);
+    struct nir_to_dxil_options opts = {
+       .environment = DXIL_ENVIRONMENT_VULKAN,
++#ifdef VITOX_UWP
++      /* Vitox M7B.4: 16-bit types also come from nir_to_dxil's own unpack_half_2x16 lowering, not only from the
++       * 16-bit Vulkan features. Without native 16-bit ops (Xbox) they must be lowered (dxil_nir_lower_16bit_conv ->
++       * legacyF16ToF32), otherwise the DXIL declares NativeLowPrecision and CreatePipelineState fails with E_INVALIDARG. */
++      .lower_int16 = !pdev->options4.Native16BitShaderOpsSupported,
++#else
+       .lower_int16 = !pdev->options4.Native16BitShaderOpsSupported &&
+       /* Don't lower 16-bit types if they can only come from min-precision */
+          (device->vk.enabled_extensions.KHR_shader_float16_int8 ||
+           device->vk.enabled_features.shaderFloat16 ||
+           device->vk.enabled_features.shaderInt16),
++#endif
+       .shader_model_max = dzn_get_shader_model(pdev),
+       .input_clip_size = input_clip_size,
+       .advanced_texture_ops = pdev->options14.AdvancedTextureOpsSupported,
+@@ -849,6 +859,9 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
+ 
+       _mesa_blake3_init(&pipeline_hash_ctx);
+       _mesa_blake3_update(&pipeline_hash_ctx, &device->bindless, sizeof(device->bindless));
++#ifdef VITOX_UWP /* Vitox M7B.4: lower_int16 depends on this capability and changes the DXIL, so it is part of the cache key */
++      _mesa_blake3_update(&pipeline_hash_ctx, &pdev->options4.Native16BitShaderOpsSupported, sizeof(pdev->options4.Native16BitShaderOpsSupported));
++#endif
+       _mesa_blake3_update(&pipeline_hash_ctx, attribs_hash, sizeof(attribs_hash));
+       _mesa_blake3_update(&pipeline_hash_ctx, &yz_flip_mode, sizeof(yz_flip_mode));
+       _mesa_blake3_update(&pipeline_hash_ctx, &y_flip_mask, sizeof(y_flip_mask));
+@@ -891,6 +904,9 @@ dzn_graphics_pipeline_compile_shaders(struct dzn_device *device,
+       if (cache) {
+          _mesa_blake3_init(&nir_hash_ctx);
+          _mesa_blake3_update(&nir_hash_ctx, &device->bindless, sizeof(device->bindless));
++#ifdef VITOX_UWP /* Vitox M7B.4: lower_int16 depends on this capability and changes the DXIL, so it is part of the cache key */
++         _mesa_blake3_update(&nir_hash_ctx, &pdev->options4.Native16BitShaderOpsSupported, sizeof(pdev->options4.Native16BitShaderOpsSupported));
++#endif
+          if (stage != MESA_SHADER_FRAGMENT) {
+             _mesa_blake3_update(&nir_hash_ctx, &lower_view_index, sizeof(lower_view_index));
+             _mesa_blake3_update(&nir_hash_ctx, &force_sample_rate_shading, sizeof(force_sample_rate_shading));
+@@ -2060,6 +2076,9 @@ dzn_graphics_pipeline_create(struct dzn_device *device,
+       hres = ID3D12Device4_CreatePipelineState(device->dev, stream_desc,
+                                                &IID_ID3D12PipelineState,
+                                                (void **)&pipeline->base.state);
++#ifdef VITOX_UWP /* Vitox M7B.1: logging only */
++      vitox_pso_log_create(device, "base", hres, stream_desc, NULL, pipeline->base.state);
++#endif
+       if (FAILED(hres)) {
+          ret = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+          goto out;
+@@ -2189,6 +2208,9 @@ dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
+ 
+    struct dzn_device *device =
+       container_of(pipeline->base.base.device, struct dzn_device, vk);
++#ifdef VITOX_UWP /* Vitox M7B.1: logging only */
++   ID3D12PipelineState *vitox_state_before = pipeline->base.state;
++#endif
+    struct dzn_physical_device *pdev =
+       container_of(device->vk.physical, struct dzn_physical_device, vk);
+ 
+@@ -2240,6 +2262,15 @@ dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
+                                                                 &IID_ID3D12PipelineState,
+                                                                 (void**)(&variant->state));
+       assert(!FAILED(hres));
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only - release builds drop the assert */
++      if (FAILED(hres))
++         vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "VITOX PSO variant CreatePipelineState hr=0x%08lx", (unsigned long)hres);
++      /* Vitox M7B.1: logging only (vk_errorf reaches only debug_utils messengers, which Vita3K has none of on Xbox) */
++      vitox_pso_log_create(device, "variant", hres, &stream_desc, &masked_key, variant->state);
++      /* Vitox M7B.2: DIAGNOSTIC bisect on copies of this stream (once); variant->state stays NULL */
++      if (FAILED(hres))
++         vitox_pso_bisect(device, &stream_desc);
++#endif
+       he = _mesa_hash_table_insert(pipeline->variants, &variant->key, variant);
+       assert(he);
+    } else {
+@@ -2253,6 +2284,17 @@ dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
+       ID3D12PipelineState_Release(pipeline->base.state);
+ 
+    pipeline->base.state = variant->state;
++#ifdef VITOX_UWP /* Vitox M7B.1: logging only */
++   {
++      static int vitox_logged;
++      if (vitox_logged < 8 || !variant->state) {
++         ++vitox_logged;
++         fprintf(stderr, "[vitox-pso] get_state: pipeline %p base.state before lookup=%p -> variant %s state=%p\n", (void *)pipeline,
++                 (void *)vitox_state_before, he ? "found/created" : "?", (void *)variant->state);
++         fflush(stderr);
++      }
++   }
++#endif
+    return variant->state;
+ }
+ 
+@@ -2501,6 +2543,9 @@ dzn_compute_pipeline_compile_shader(struct dzn_device *device,
+       _mesa_blake3_init(&pipeline_hash_ctx);
+       vk_pipeline_hash_shader_stage(pipeline->base.flags, &info->stage, NULL, spirv_hash);
+       _mesa_blake3_update(&pipeline_hash_ctx, &device->bindless, sizeof(device->bindless));
++#ifdef VITOX_UWP /* Vitox M7B.4: lower_int16 depends on this capability and changes the DXIL, so it is part of the cache key */
++      _mesa_blake3_update(&pipeline_hash_ctx, &pdev->options4.Native16BitShaderOpsSupported, sizeof(pdev->options4.Native16BitShaderOpsSupported));
++#endif
+       _mesa_blake3_update(&pipeline_hash_ctx, spirv_hash, sizeof(spirv_hash));
+       _mesa_blake3_update(&pipeline_hash_ctx, layout->stages[MESA_SHADER_COMPUTE].hash,
+                         sizeof(layout->stages[MESA_SHADER_COMPUTE].hash));
+@@ -2518,6 +2563,9 @@ dzn_compute_pipeline_compile_shader(struct dzn_device *device,
+       blake3_hasher nir_hash_ctx;
+       _mesa_blake3_init(&nir_hash_ctx);
+       _mesa_blake3_update(&nir_hash_ctx, &device->bindless, sizeof(device->bindless));
++#ifdef VITOX_UWP /* Vitox M7B.4: lower_int16 depends on this capability and changes the DXIL, so it is part of the cache key */
++      _mesa_blake3_update(&nir_hash_ctx, &pdev->options4.Native16BitShaderOpsSupported, sizeof(pdev->options4.Native16BitShaderOpsSupported));
++#endif
+       _mesa_blake3_update(&nir_hash_ctx, spirv_hash, sizeof(spirv_hash));
+       _mesa_blake3_final(&nir_hash_ctx, nir_hash);
+    }
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_sync.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_sync.c
+index 48dff7b..28df8fc 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/dzn_sync.c
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/dzn_sync.c
+@@ -46,11 +46,18 @@ dzn_sync_init(struct vk_device *device,
+    D3D12_FENCE_FLAGS flags = (sync->flags & VK_SYNC_IS_SHAREABLE) ?
+       D3D12_FENCE_FLAG_SHARED : D3D12_FENCE_FLAG_NONE;
+ 
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only */
++   HRESULT vitox_hr = ID3D12Device1_CreateFence(ddev->dev, initial_value, flags, &IID_ID3D12Fence, (void **)&dsync->fence);
++   if (FAILED(vitox_hr))
++      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "VITOX CreateFence hr=0x%08lx device_removed_reason=0x%08lx",
++                       (unsigned long)vitox_hr, (unsigned long)ID3D12Device_GetDeviceRemovedReason(ddev->dev));
++#else
+    if (FAILED(ID3D12Device1_CreateFence(ddev->dev, initial_value,
+                                         flags,
+                                         &IID_ID3D12Fence,
+                                         (void **)&dsync->fence)))
+       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++#endif
+ 
+    return VK_SUCCESS;
+ }
+@@ -79,8 +86,15 @@ dzn_sync_signal(struct vk_device *device,
+    if (!(sync->flags & VK_SYNC_IS_TIMELINE))
+       value = 1;
+ 
++#ifdef VITOX_UWP /* Vitox M6B.1: logging only */
++   HRESULT vitox_hr = ID3D12Fence_Signal(dsync->fence, value);
++   if (FAILED(vitox_hr))
++      return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY, "VITOX ID3D12Fence::Signal(%llu) hr=0x%08lx",
++                       (unsigned long long)value, (unsigned long)vitox_hr);
++#else
+    if (FAILED(ID3D12Fence_Signal(dsync->fence, value)))
+       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++#endif
+ 
+    return VK_SUCCESS;
+ }
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/vulkan/wsi/wsi_common_win32.cpp b/C:/Vitox/Vitox-M6/mesa/src/vulkan/wsi/wsi_common_win32.cpp
+index 6929684..666b3d7 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/vulkan/wsi/wsi_common_win32.cpp
++++ b/C:/Vitox/Vitox-M6/mesa/src/vulkan/wsi/wsi_common_win32.cpp
+@@ -40,6 +40,63 @@
+ #include <directx/d3d12.h>
+ #include <dxguids/dxguids.h>
+ 
++#ifdef VITOX_UWP
++/* Vitox (WindowsStore / Xbox): this WSI presents through DirectComposition (CreateTargetForHwnd)
++ * or GDI, both desktop-only, and only to an HWND. A packaged CoreWindow app has neither, so the
++ * Win32 surface platform is not offered: the host owns presentation (its own D3D12 swapchain for
++ * the CoreWindow) and receives images through VK_KHR_external_memory_win32. These are the
++ * symbols wsi_common.c and the entrypoint table reference. */
++
++VKAPI_ATTR VkBool32 VKAPI_CALL
++wsi_GetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex)
++{
++   return VK_FALSE;
++}
++
++VKAPI_ATTR VkResult VKAPI_CALL
++wsi_CreateWin32SurfaceKHR(VkInstance _instance, const VkWin32SurfaceCreateInfoKHR *pCreateInfo,
++                          const VkAllocationCallbacks *pAllocator, VkSurfaceKHR *pSurface)
++{
++   mesa_loge("Vitox UWP: VK_KHR_win32_surface is not available (no HWND / DirectComposition); "
++             "present through the host-owned CoreWindow swapchain");
++   return VK_ERROR_INITIALIZATION_FAILED;
++}
++
++void
++wsi_win32_surface_destroy(VkIcdSurfaceBase *icd_surface, VkInstance _instance,
++                          const VkAllocationCallbacks *pAllocator)
++{
++   VK_FROM_HANDLE(vk_instance, instance, _instance);
++   vk_free2(&instance->alloc, pAllocator, icd_surface);
++}
++
++enum wsi_swapchain_blit_type
++wsi_dxgi_image_needs_blit(const struct wsi_device *wsi, const struct wsi_dxgi_image_params *params, VkDevice device)
++{
++   return WSI_SWAPCHAIN_NO_BLIT;
++}
++
++VkResult
++wsi_dxgi_configure_image(const struct wsi_swapchain *chain, const VkSwapchainCreateInfoKHR *pCreateInfo,
++                         const struct wsi_dxgi_image_params *params, struct wsi_image_info *info)
++{
++   return VK_ERROR_INITIALIZATION_FAILED;
++}
++
++VkResult
++wsi_win32_init_wsi(struct wsi_device *wsi_device, const VkAllocationCallbacks *alloc, VkPhysicalDevice physical_device)
++{
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_WIN32] = NULL;
++   return VK_SUCCESS;
++}
++
++void
++wsi_win32_finish_wsi(struct wsi_device *wsi_device, const VkAllocationCallbacks *alloc)
++{
++}
++
++#else /* !VITOX_UWP: upstream implementation, unchanged */
++
+ #include <dcomp.h>
+ 
+ #if defined(__GNUC__)
+@@ -1141,3 +1198,5 @@ wsi_win32_finish_wsi(struct wsi_device *wsi_device,
+ 
+    vk_free(alloc, wsi);
+ }
++
++#endif /* VITOX_UWP */
+diff --git a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/meson.build b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/meson.build
+index 800fdc2..8c09118 100644
+--- a/C:/Vitox/toolchain/src/mesa-26.2.5/src/microsoft/vulkan/meson.build
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/meson.build
+@@ -28,6 +28,7 @@ dzn_drirc = custom_target(
+ 
+ libdzn_files = files(
+   'dzn_cmd_buffer.c',
++  'vitox_pso_diag.c', # Vitox M7B.1 (VITOX_UWP only; empty otherwise)
+   'dzn_descriptor_set.c',
+   'dzn_device.c',
+   'dzn_dxcore.cpp',
+diff --git a/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.h b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.h
+new file mode 100644
+index 0000000..1f22af7
+--- /dev/null
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.h
+@@ -0,0 +1,30 @@
++/* Vitox M7B.1 (VITOX_UWP only): LOGGING-ONLY diagnostics for D3D12 pipeline-state creation in dzn.
++ * Writes to stderr (the Vitox app redirects it to LocalState). Nothing here changes a PSO, a stream or a result.
++ * The only behavioural addition (in dzn_cmd_buffer.c) is the labelled DIAGNOSTIC CONTAINMENT: a draw whose
++ * pipeline has no D3D12 state is not issued to D3D12 and is counted in vitox_dzn_pso_failures, which the probe
++ * polls to stop rendering immediately. */
++#ifndef VITOX_PSO_DIAG_H
++#define VITOX_PSO_DIAG_H
++#ifdef VITOX_UWP
++
++#include "dzn_private.h"
++
++/* incremented for every draw skipped because the bound pipeline has no ID3D12PipelineState */
++extern __declspec(dllexport) volatile long vitox_dzn_pso_failures;
++
++/* Log one CreatePipelineState attempt: path ("base" / "variant"), HRESULT, device-removed reason, the variant key
++ * (NULL for the base path), and every subobject of the stream in order. */
++void vitox_pso_log_create(struct dzn_device *device, const char *path, HRESULT hr, const D3D12_PIPELINE_STATE_STREAM_DESC *stream,
++                          const struct dzn_graphics_pipeline_variant_key *key, const void *result_state);
++
++/* ---- Vitox M7B.2 (VITOX_UWP only): DIAGNOSTIC field bisect. Never changes the real pipeline, stream or result. ---- */
++
++/* dzn_device_create_root_sig: remember the root-signature layout (params, ranges, static samplers) for the bisect report */
++void vitox_pso_root_sig_created(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc, const void *sig);
++
++/* first failed variant: format support, DXIL signature/resource inventory, root-signature summary, then CreatePipelineState
++ * on modified COPIES of the failed stream (tests 0..14). Every diagnostic PSO is released immediately. Runs once. */
++void vitox_pso_bisect(struct dzn_device *device, const D3D12_PIPELINE_STATE_STREAM_DESC *failed);
++
++#endif
++#endif
+diff --git a/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.c b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.c
+new file mode 100644
+index 0000000..6bf88a3
+--- /dev/null
++++ b/C:/Vitox/Vitox-M6/mesa/src/microsoft/vulkan/vitox_pso_diag.c
+@@ -0,0 +1,900 @@
++/* Vitox M7B.1 (VITOX_UWP only): LOGGING-ONLY D3D12 PSO diagnostics for dzn - see vitox_pso_diag.h. */
++#ifdef VITOX_UWP
++
++#include "vitox_pso_diag.h"
++
++#include <stdio.h>
++#include <string.h>
++
++__declspec(dllexport) volatile long vitox_dzn_pso_failures = 0;
++
++/* M7B.2: keeps a copy of the differential control's DXIL pair + root signature (defined below) */
++static void capture_control(const char *path, HRESULT hr, const D3D12_PIPELINE_STATE_STREAM_DESC *stream);
++/* M7B.3: SFI0 feature flags of a DXIL blob (defined below); false if absent */
++static bool dxil_sfi0(const D3D12_SHADER_BYTECODE *bc, uint64_t *flags);
++
++/* ---- SHA-256 (FIPS 180-4), for DXIL blob identification only ---- */
++static const uint32_t k_sha[64] = {
++   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be,
++   0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa,
++   0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85,
++   0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
++   0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
++   0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 };
++#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
++static void sha_block(uint32_t h[8], const uint8_t *p) {
++   uint32_t w[64];
++   for (int i = 0; i < 16; i++)
++      w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
++   for (int i = 16; i < 64; i++) {
++      const uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3), s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
++      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
++   }
++   uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
++   for (int i = 0; i < 64; i++) {
++      const uint32_t t1 = hh + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + k_sha[i] + w[i];
++      const uint32_t t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
++      hh = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
++   }
++   h[0] += a, h[1] += b, h[2] += c, h[3] += d, h[4] += e, h[5] += f, h[6] += g, h[7] += hh;
++}
++static void sha256_hex(const void *data, size_t size, char out[65]) {
++   uint32_t h[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
++   const uint8_t *p = data;
++   size_t n = size;
++   for (; n >= 64; n -= 64, p += 64)
++      sha_block(h, p);
++   uint8_t tail[128] = { 0 };
++   memcpy(tail, p, n);
++   tail[n] = 0x80;
++   const size_t tlen = n < 56 ? 64 : 128;
++   const uint64_t bits = (uint64_t)size * 8;
++   for (int i = 0; i < 8; i++)
++      tail[tlen - 1 - i] = (uint8_t)(bits >> (8 * i));
++   sha_block(h, tail);
++   if (tlen == 128)
++      sha_block(h, tail + 64);
++   for (int i = 0; i < 8; i++)
++      sprintf(out + 8 * i, "%08x", h[i]);
++}
++
++static const char *subobject_name(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE t) {
++   switch (t) {
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE: return "ROOT_SIGNATURE";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS: return "VS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS: return "PS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS: return "DS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS: return "HS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS: return "GS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS: return "CS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT: return "STREAM_OUTPUT";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND: return "BLEND";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK: return "SAMPLE_MASK";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER: return "RASTERIZER";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL: return "DEPTH_STENCIL";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT: return "INPUT_LAYOUT";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE: return "IB_STRIP_CUT_VALUE";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY: return "PRIMITIVE_TOPOLOGY";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS: return "RENDER_TARGET_FORMATS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT: return "DEPTH_STENCIL_FORMAT";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC: return "SAMPLE_DESC";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK: return "NODE_MASK";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO: return "CACHED_PSO";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS: return "FLAGS";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1: return "DEPTH_STENCIL1";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING: return "VIEW_INSTANCING";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2: return "DEPTH_STENCIL2";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER1: return "RASTERIZER1";
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER2: return "RASTERIZER2";
++   default: return "?";
++   }
++}
++
++static void log_face(const char *which, const D3D12_DEPTH_STENCILOP_DESC *f) {
++   fprintf(stderr, "[vitox-pso]       %s: fail=%d depthfail=%d pass=%d func=%d\n", which, f->StencilFailOp, f->StencilDepthFailOp, f->StencilPassOp,
++           f->StencilFunc);
++}
++static void log_face1(const char *which, const D3D12_DEPTH_STENCILOP_DESC1 *f) {
++   fprintf(stderr, "[vitox-pso]       %s: fail=%d depthfail=%d pass=%d func=%d readmask=0x%02x writemask=0x%02x\n", which, f->StencilFailOp,
++           f->StencilDepthFailOp, f->StencilPassOp, f->StencilFunc, f->StencilReadMask, f->StencilWriteMask);
++}
++
++/* d3dx12.h (C++) type, not in C d3d12.h: same layout as the RENDER_TARGET_FORMATS subobject payload */
++typedef struct { DXGI_FORMAT RTFormats[8]; UINT NumRenderTargets; } vitox_rt_format_array;
++
++/* one wrapper per subobject: { type; desc } aligned like dzn's d3d12_pipeline_state_stream_new_desc */
++#define WRAP(T) struct { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type; T desc; }
++#define CASE(ID, T)                                                                \
++   case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_##ID: {                                \
++      const WRAP(T) *w = (const void *)(base + off);                               \
++      size = sizeof(*w);                                                           \
++      const T *d = &w->desc;                                                       \
++      (void)d;
++
++void vitox_pso_log_create(struct dzn_device *device, const char *path, HRESULT hr, const D3D12_PIPELINE_STATE_STREAM_DESC *stream,
++                          const struct dzn_graphics_pipeline_variant_key *key, const void *result_state)
++{
++   const HRESULT removed = device ? ID3D12Device_GetDeviceRemovedReason(device->dev) : 0;
++   fprintf(stderr, "[vitox-pso] CreatePipelineState (%s path) hr=0x%08lx%s removed=0x%08lx result_state=%p stream SizeInBytes=%zu\n", path,
++           (unsigned long)hr, FAILED(hr) ? " FAILED" : "", (unsigned long)removed, result_state, (size_t)stream->SizeInBytes);
++   if (key)
++      fprintf(stderr,
++              "[vitox-pso]   variant key: ib_strip_cut=%d depth_bias{constant=%d slope=%f clamp=%f} stencil front{ref=%u compare=0x%x write=0x%x} "
++              "back{ref=%u compare=0x%x write=0x%x}\n",
++              key->ib_strip_cut, key->depth_bias.constant_factor, key->depth_bias.slope_factor, key->depth_bias.clamp,
++              key->stencil_test.front.ref, key->stencil_test.front.compare_mask, key->stencil_test.front.write_mask, key->stencil_test.back.ref,
++              key->stencil_test.back.compare_mask, key->stencil_test.back.write_mask);
++   const uint8_t *base = stream->pPipelineStateSubobjectStream;
++   size_t off = 0;
++   unsigned subidx = 0, stages = 0;
++   while (off < stream->SizeInBytes && subidx < 32) {
++      off = ALIGN_POT(off, alignof(void *));
++      if (off + sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) > stream->SizeInBytes)
++         break;
++      const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = *(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE *)(base + off);
++      size_t size = 0;
++      fprintf(stderr, "[vitox-pso]   [%u] @%zu %s(%d)", subidx, off, subobject_name(type), type);
++      switch (type) {
++      CASE(ROOT_SIGNATURE, ID3D12RootSignature *) fprintf(stderr, " %s\n", *d ? "non-null" : "NULL"); break; }
++      case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS:
++      case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
++      case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
++      case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
++      case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS: {
++         const WRAP(D3D12_SHADER_BYTECODE) *w = (const void *)(base + off);
++         size = sizeof(*w);
++         char sha[65] = "-";
++         if (w->desc.pShaderBytecode && w->desc.BytecodeLength)
++            sha256_hex(w->desc.pShaderBytecode, w->desc.BytecodeLength, sha);
++         uint64_t sfi0 = 0;
++         const bool has_sfi0 = dxil_sfi0(&w->desc, &sfi0);
++         fprintf(stderr, " DXIL %zu B sha256 %s SFI0=%s0x%llx NativeLowPrecision=%d\n", (size_t)w->desc.BytecodeLength, sha, has_sfi0 ? "" : "absent/",
++                 (unsigned long long)sfi0, !!(sfi0 & 0x40000));
++         ++stages;
++         break;
++      }
++      CASE(STREAM_OUTPUT, D3D12_STREAM_OUTPUT_DESC) fprintf(stderr, " entries=%u\n", d->NumEntries); break; }
++      CASE(BLEND, D3D12_BLEND_DESC)
++         fprintf(stderr, " alpha_to_coverage=%d independent=%d rt0{enable=%d logic=%d src=%d dst=%d op=%d srcA=%d dstA=%d opA=%d logicop=%d mask=0x%x}\n",
++                 d->AlphaToCoverageEnable, d->IndependentBlendEnable, d->RenderTarget[0].BlendEnable, d->RenderTarget[0].LogicOpEnable,
++                 d->RenderTarget[0].SrcBlend, d->RenderTarget[0].DestBlend, d->RenderTarget[0].BlendOp, d->RenderTarget[0].SrcBlendAlpha,
++                 d->RenderTarget[0].DestBlendAlpha, d->RenderTarget[0].BlendOpAlpha, d->RenderTarget[0].LogicOp, d->RenderTarget[0].RenderTargetWriteMask);
++         break; }
++      CASE(SAMPLE_MASK, UINT) fprintf(stderr, " 0x%x\n", *d); break; }
++      CASE(RASTERIZER, D3D12_RASTERIZER_DESC)
++         fprintf(stderr, " fill=%d cull=%d ccw=%d bias=%d clamp=%f slope=%f clip=%d msaa=%d aaline=%d forced=%u conservative=%d\n", d->FillMode, d->CullMode,
++                 d->FrontCounterClockwise, d->DepthBias, d->DepthBiasClamp, d->SlopeScaledDepthBias, d->DepthClipEnable, d->MultisampleEnable,
++                 d->AntialiasedLineEnable, d->ForcedSampleCount, d->ConservativeRaster);
++         break; }
++      CASE(RASTERIZER1, D3D12_RASTERIZER_DESC1)
++         fprintf(stderr, " fill=%d cull=%d ccw=%d bias=%f clamp=%f slope=%f clip=%d\n", d->FillMode, d->CullMode, d->FrontCounterClockwise, d->DepthBias,
++                 d->DepthBiasClamp, d->SlopeScaledDepthBias, d->DepthClipEnable);
++         break; }
++      CASE(RASTERIZER2, D3D12_RASTERIZER_DESC2)
++         fprintf(stderr, " fill=%d cull=%d ccw=%d bias=%f clamp=%f slope=%f clip=%d line=%d forced=%u conservative=%d\n", d->FillMode, d->CullMode,
++                 d->FrontCounterClockwise, d->DepthBias, d->DepthBiasClamp, d->SlopeScaledDepthBias, d->DepthClipEnable, d->LineRasterizationMode,
++                 d->ForcedSampleCount, d->ConservativeRaster);
++         break; }
++      CASE(DEPTH_STENCIL, D3D12_DEPTH_STENCIL_DESC)
++         fprintf(stderr, " depth{enable=%d write=%d func=%d} stencil{enable=%d read=0x%02x write=0x%02x}\n", d->DepthEnable, d->DepthWriteMask, d->DepthFunc,
++                 d->StencilEnable, d->StencilReadMask, d->StencilWriteMask);
++         log_face("front", &d->FrontFace);
++         log_face("back", &d->BackFace);
++         break; }
++      CASE(DEPTH_STENCIL1, D3D12_DEPTH_STENCIL_DESC1)
++         fprintf(stderr, " depth{enable=%d write=%d func=%d} stencil{enable=%d read=0x%02x write=0x%02x} bounds=%d\n", d->DepthEnable, d->DepthWriteMask,
++                 d->DepthFunc, d->StencilEnable, d->StencilReadMask, d->StencilWriteMask, d->DepthBoundsTestEnable);
++         log_face("front", &d->FrontFace);
++         log_face("back", &d->BackFace);
++         break; }
++      CASE(DEPTH_STENCIL2, D3D12_DEPTH_STENCIL_DESC2)
++         fprintf(stderr, " depth{enable=%d write=%d func=%d} stencil{enable=%d} bounds=%d\n", d->DepthEnable, d->DepthWriteMask, d->DepthFunc,
++                 d->StencilEnable, d->DepthBoundsTestEnable);
++         log_face1("front", &d->FrontFace);
++         log_face1("back", &d->BackFace);
++         break; }
++      CASE(INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC)
++         fprintf(stderr, " elements=%u\n", d->NumElements);
++         for (UINT i = 0; i < d->NumElements && d->pInputElementDescs; i++)
++            fprintf(stderr, "[vitox-pso]       element %u: %s%u format=%d slot=%u offset=%u class=%d step=%u\n", i, d->pInputElementDescs[i].SemanticName,
++                    d->pInputElementDescs[i].SemanticIndex, d->pInputElementDescs[i].Format, d->pInputElementDescs[i].InputSlot,
++                    d->pInputElementDescs[i].AlignedByteOffset, d->pInputElementDescs[i].InputSlotClass, d->pInputElementDescs[i].InstanceDataStepRate);
++         break; }
++      CASE(IB_STRIP_CUT_VALUE, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE) fprintf(stderr, " %d\n", *d); break; }
++      CASE(PRIMITIVE_TOPOLOGY, D3D12_PRIMITIVE_TOPOLOGY_TYPE) fprintf(stderr, " type=%d\n", *d); break; }
++      CASE(RENDER_TARGET_FORMATS, vitox_rt_format_array)
++         fprintf(stderr, " count=%u formats=%d,%d,%d,%d\n", d->NumRenderTargets, d->RTFormats[0], d->RTFormats[1], d->RTFormats[2], d->RTFormats[3]);
++         break; }
++      CASE(DEPTH_STENCIL_FORMAT, DXGI_FORMAT) fprintf(stderr, " %d\n", *d); break; }
++      CASE(SAMPLE_DESC, DXGI_SAMPLE_DESC) fprintf(stderr, " count=%u quality=%u\n", d->Count, d->Quality); break; }
++      CASE(NODE_MASK, UINT) fprintf(stderr, " 0x%x\n", *d); break; }
++      CASE(CACHED_PSO, D3D12_CACHED_PIPELINE_STATE) fprintf(stderr, " %zu B\n", (size_t)d->CachedBlobSizeInBytes); break; }
++      CASE(FLAGS, D3D12_PIPELINE_STATE_FLAGS) fprintf(stderr, " 0x%x\n", *d); break; }
++      CASE(VIEW_INSTANCING, D3D12_VIEW_INSTANCING_DESC) fprintf(stderr, " count=%u flags=0x%x\n", d->ViewInstanceCount, d->Flags); break; }
++      default:
++         fprintf(stderr, " (unknown subobject: walk stopped)\n");
++         size = 0;
++         break;
++      }
++      if (!size)
++         break;
++      off += size;
++      ++subidx;
++   }
++   fprintf(stderr, "[vitox-pso]   subobjects=%u shader stages=%u (walked %zu of %zu bytes)\n", subidx, stages, off, (size_t)stream->SizeInBytes);
++   fflush(stderr);
++   capture_control(path, hr, stream);
++}
++
++/* ======================================================================================================================
++ * Vitox M7B.2: DIAGNOSTIC PSO field bisect. Everything below works on COPIES; the real variant stays NULL and contained.
++ * ====================================================================================================================== */
++
++#include <stdlib.h>
++
++#define B "[vitox-bisect] "
++
++/* ---- stream map: offset of each subobject wrapper, SIZE_MAX if absent ---- */
++#define MAP_TYPES 64
++struct stream_map { size_t off[MAP_TYPES]; };
++
++static size_t subobject_size(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE t) {
++   switch (t) {
++#define SZ(ID, T) case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_##ID: return sizeof(WRAP(T));
++   SZ(ROOT_SIGNATURE, ID3D12RootSignature *) SZ(VS, D3D12_SHADER_BYTECODE) SZ(PS, D3D12_SHADER_BYTECODE) SZ(DS, D3D12_SHADER_BYTECODE)
++   SZ(HS, D3D12_SHADER_BYTECODE) SZ(GS, D3D12_SHADER_BYTECODE) SZ(CS, D3D12_SHADER_BYTECODE) SZ(STREAM_OUTPUT, D3D12_STREAM_OUTPUT_DESC)
++   SZ(BLEND, D3D12_BLEND_DESC) SZ(SAMPLE_MASK, UINT) SZ(RASTERIZER, D3D12_RASTERIZER_DESC) SZ(RASTERIZER1, D3D12_RASTERIZER_DESC1)
++   SZ(RASTERIZER2, D3D12_RASTERIZER_DESC2) SZ(DEPTH_STENCIL, D3D12_DEPTH_STENCIL_DESC) SZ(DEPTH_STENCIL1, D3D12_DEPTH_STENCIL_DESC1)
++   SZ(DEPTH_STENCIL2, D3D12_DEPTH_STENCIL_DESC2) SZ(INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC) SZ(IB_STRIP_CUT_VALUE, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE)
++   SZ(PRIMITIVE_TOPOLOGY, D3D12_PRIMITIVE_TOPOLOGY_TYPE) SZ(RENDER_TARGET_FORMATS, vitox_rt_format_array) SZ(DEPTH_STENCIL_FORMAT, DXGI_FORMAT)
++   SZ(SAMPLE_DESC, DXGI_SAMPLE_DESC) SZ(NODE_MASK, UINT) SZ(CACHED_PSO, D3D12_CACHED_PIPELINE_STATE) SZ(FLAGS, D3D12_PIPELINE_STATE_FLAGS)
++   SZ(VIEW_INSTANCING, D3D12_VIEW_INSTANCING_DESC)
++#undef SZ
++   default: return 0;
++   }
++}
++
++static void map_stream(const void *buf, size_t total, struct stream_map *m) {
++   for (unsigned i = 0; i < MAP_TYPES; i++)
++      m->off[i] = SIZE_MAX;
++   const uint8_t *base = buf;
++   size_t off = 0;
++   while (off < total) {
++      off = ALIGN_POT(off, alignof(void *));
++      if (off + sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE) > total)
++         break;
++      const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE t = *(const D3D12_PIPELINE_STATE_SUBOBJECT_TYPE *)(base + off);
++      const size_t size = subobject_size(t);
++      if (!size || (unsigned)t >= MAP_TYPES)
++         break;
++      m->off[t] = off;
++      off += size;
++   }
++}
++
++/* pointer to the desc of subobject ID in buf, or NULL */
++#define DESC(buf, m, ID, T) \
++   ((m).off[D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_##ID] == SIZE_MAX ? NULL \
++       : &((WRAP(T) *)((uint8_t *)(buf) + (m).off[D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_##ID]))->desc)
++
++/* ---- DXIL container inventory (signatures ISG1/OSG1, PSV0 resources + interpolation, SFI0, program version, digest) ---- */
++struct sig_elem {
++   char name[32];
++   uint32_t sem_index, sv, comp, reg;
++   uint8_t mask, rw;
++};
++struct psv_elem {
++   char name[32];
++   uint8_t rows, start_row, cols, start_col, kind, comp, interp;
++};
++struct psv_res { uint32_t type, space, lo, hi; };
++struct dxil_info {
++   bool ok;
++   uint8_t digest[16];
++   uint32_t prog_version;
++   bool has_sfi0;
++   uint64_t sfi0;
++   unsigned nin, nout, npin, npout, nres;
++   struct sig_elem in[32], out[32];
++   struct psv_elem pin[32], pout[32];
++   struct psv_res res[32];
++   uint32_t psv_size, res_stride;
++};
++
++static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
++#define FOURCC(a, b, c, d) ((uint32_t)(a) | (uint32_t)(b) << 8 | (uint32_t)(c) << 16 | (uint32_t)(d) << 24)
++
++static const uint8_t *find_part(const uint8_t *blob, size_t len, uint32_t fourcc, uint32_t *size) {
++   if (len < 32 || rd32(blob) != FOURCC('D', 'X', 'B', 'C'))
++      return NULL;
++   const uint32_t count = rd32(blob + 28);
++   for (uint32_t i = 0; i < count && 32 + 4 * (i + 1) <= len; i++) {
++      const uint32_t off = rd32(blob + 32 + 4 * i);
++      if (off + 8 > len)
++         continue;
++      const uint32_t psize = rd32(blob + off + 4);
++      if (rd32(blob + off) == fourcc && off + 8 + psize <= len) {
++         *size = psize;
++         return blob + off + 8;
++      }
++   }
++   return NULL;
++}
++
++static void copy_name(char dst[32], const uint8_t *part, uint32_t part_size, uint32_t name_off) {
++   dst[0] = 0;
++   if (name_off >= part_size)
++      return;
++   size_t n = 0;
++   while (n < 31 && name_off + n < part_size && part[name_off + n])
++      dst[n] = (char)part[name_off + n], ++n;
++   dst[n] = 0;
++}
++
++static unsigned parse_sig(const uint8_t *p, uint32_t size, struct sig_elem *e) {
++   if (!p || size < 8)
++      return 0;
++   const uint32_t count = rd32(p), off = rd32(p + 4);
++   unsigned n = 0;
++   for (uint32_t i = 0; i < count && n < 32 && off + 32 * (i + 1) <= size; i++, n++) {
++      const uint8_t *q = p + off + 32 * i;
++      copy_name(e[n].name, p, size, rd32(q + 4));
++      e[n].sem_index = rd32(q + 8), e[n].sv = rd32(q + 12), e[n].comp = rd32(q + 16), e[n].reg = rd32(q + 20);
++      e[n].mask = q[24], e[n].rw = q[25];
++   }
++   return n;
++}
++
++static void parse_psv(const uint8_t *p, uint32_t size, struct dxil_info *d) {
++   if (!p || size < 4)
++      return;
++   d->psv_size = rd32(p);
++   size_t q = 4 + d->psv_size;
++   if (q + 4 > size)
++      return;
++   unsigned n_in = 0, n_out = 0;
++   if (d->psv_size >= 36) /* dxil_psv_runtime_info_1: sig_input_elements @28, sig_output_elements @29 */
++      n_in = p[4 + 28], n_out = p[4 + 29];
++   const uint32_t rc = rd32(p + q);
++   q += 4;
++   if (rc) {
++      if (q + 4 > size)
++         return;
++      d->res_stride = rd32(p + q);
++      q += 4;
++      for (uint32_t i = 0; i < rc && q + d->res_stride <= size && d->res_stride >= 16; i++, q += d->res_stride)
++         if (d->nres < 32)
++            d->res[d->nres++] = (struct psv_res){ rd32(p + q), rd32(p + q + 4), rd32(p + q + 8), rd32(p + q + 12) };
++   }
++   if (q + 4 > size)
++      return;
++   const uint32_t st_size = rd32(p + q);
++   const size_t st = q + 4;
++   q = st + st_size;
++   if (q + 4 > size)
++      return;
++   q += 4 + 4 * (size_t)rd32(p + q); /* semantic index table */
++   if (!(n_in || n_out) || q + 4 > size)
++      return;
++   const uint32_t es = rd32(p + q);
++   q += 4;
++   for (unsigned i = 0; i < n_in + n_out && es >= 12 && q + es <= size; i++, q += es) {
++      struct psv_elem *e = i < n_in ? (d->npin < 32 ? &d->pin[d->npin++] : NULL) : (d->npout < 32 ? &d->pout[d->npout++] : NULL);
++      if (!e)
++         continue;
++      copy_name(e->name, p + st, st_size, rd32(p + q));
++      e->rows = p[q + 8], e->start_row = p[q + 9], e->cols = p[q + 10] & 0xF, e->start_col = (p[q + 10] >> 4) & 3;
++      e->kind = p[q + 11], e->comp = p[q + 12], e->interp = p[q + 13];
++   }
++}
++
++static bool dxil_sfi0(const D3D12_SHADER_BYTECODE *bc, uint64_t *flags) {
++   *flags = 0;
++   uint32_t sz;
++   const uint8_t *p = bc && bc->pShaderBytecode ? find_part(bc->pShaderBytecode, bc->BytecodeLength, FOURCC('S', 'F', 'I', '0'), &sz) : NULL;
++   if (!p || sz < 8)
++      return false;
++   memcpy(flags, p, 8);
++   return true;
++}
++
++static void inspect_dxil(const D3D12_SHADER_BYTECODE *bc, struct dxil_info *d) {
++   memset(d, 0, sizeof(*d));
++   if (!bc || !bc->pShaderBytecode || bc->BytecodeLength < 32)
++      return;
++   const uint8_t *blob = bc->pShaderBytecode;
++   const size_t len = bc->BytecodeLength;
++   if (rd32(blob) != FOURCC('D', 'X', 'B', 'C'))
++      return;
++   d->ok = true;
++   memcpy(d->digest, blob + 4, 16);
++   uint32_t sz;
++   const uint8_t *p;
++   if ((p = find_part(blob, len, FOURCC('D', 'X', 'I', 'L'), &sz)) && sz >= 4)
++      d->prog_version = rd32(p);
++   if ((p = find_part(blob, len, FOURCC('S', 'F', 'I', '0'), &sz)) && sz >= 8)
++      d->has_sfi0 = true, memcpy(&d->sfi0, p, 8);
++   p = find_part(blob, len, FOURCC('I', 'S', 'G', '1'), &sz);
++   d->nin = p ? parse_sig(p, sz, d->in) : 0;
++   p = find_part(blob, len, FOURCC('O', 'S', 'G', '1'), &sz);
++   d->nout = p ? parse_sig(p, sz, d->out) : 0;
++   p = find_part(blob, len, FOURCC('P', 'S', 'V', '0'), &sz);
++   parse_psv(p, sz, d);
++}
++
++static const char *sv_name(uint32_t sv) {
++   switch (sv) {
++   case 0: return "-"; case 1: return "SV_Position"; case 2: return "SV_ClipDistance"; case 3: return "SV_CullDistance";
++   case 4: return "SV_RTArrayIndex"; case 5: return "SV_ViewportArrayIndex"; case 6: return "SV_VertexID"; case 7: return "SV_PrimitiveID";
++   case 8: return "SV_InstanceID"; case 9: return "SV_IsFrontFace"; case 10: return "SV_SampleIndex"; case 64: return "SV_Target";
++   case 65: return "SV_Depth"; case 66: return "SV_Coverage"; default: return "SV_other";
++   }
++}
++static const char *comp_name(uint32_t c) {
++   switch (c) { case 0: return "unknown"; case 1: return "uint32"; case 2: return "int32"; case 3: return "float32"; case 4: return "uint16";
++   case 5: return "int16"; case 6: return "float16"; default: return "other"; }
++}
++static const char *interp_name(uint8_t i) {
++   switch (i) { case 0: return "undefined"; case 1: return "constant"; case 2: return "linear"; case 3: return "linear_centroid";
++   case 4: return "linear_noperspective"; case 5: return "linear_noperspective_centroid"; case 6: return "linear_sample";
++   case 7: return "linear_noperspective_sample"; default: return "?"; }
++}
++
++static void log_sfi0(uint64_t f) {
++   static const char *names[] = { "Doubles", "ComputeShadersPlusRawAndStructuredBuffers", "UAVsAtEveryStage", "64UAVs", "MinimumPrecision",
++      "11_1_DoubleExtensions", "11_1_ShaderExtensions", "LEVEL9ComparisonFiltering", "TiledResources", "StencilRef", "InnerCoverage",
++      "TypedUAVLoadAdditionalFormats", "ROVs", "ViewportAndRTArrayIndexFromAnyShader", "WaveOps", "Int64Ops", "ViewID", "Barycentrics",
++      "NativeLowPrecision", "ShadingRate", "Raytracing_Tier_1_1", "SamplerFeedback", "AtomicInt64OnTypedResource", "AtomicInt64OnGroupShared",
++      "DerivativesInMeshAndAmpShaders", "ResourceDescriptorHeapIndexing", "SamplerDescriptorHeapIndexing", "bit27", "AtomicInt64OnHeapResource",
++      "AdvancedTextureOps", "WriteableMSAATextures", "SampleCmpWithGradientOrBias", "ExtendedCommandInfo" };
++   fprintf(stderr, " SFI0=0x%llx [", (unsigned long long)f);
++   for (unsigned i = 0; i < 64; i++)
++      if (f & (1ull << i))
++         fprintf(stderr, " %s", i < ARRAY_SIZE(names) ? names[i] : "bit?");
++   fprintf(stderr, " ]");
++}
++
++static void log_dxil(const char *label, const D3D12_SHADER_BYTECODE *bc, const struct dxil_info *d) {
++   char sha[65] = "-";
++   if (bc && bc->pShaderBytecode && bc->BytecodeLength)
++      sha256_hex(bc->pShaderBytecode, bc->BytecodeLength, sha);
++   fprintf(stderr, B "DXIL %s: %zu B sha256 %s container=%s", label, bc ? (size_t)bc->BytecodeLength : 0, sha, d->ok ? "DXBC" : "INVALID");
++   if (!d->ok) {
++      fprintf(stderr, "\n");
++      return;
++   }
++   fprintf(stderr, " digest=");
++   for (int i = 0; i < 16; i++)
++      fprintf(stderr, "%02x", d->digest[i]);
++   fprintf(stderr, " program kind=%u sm=%u.%u", d->prog_version >> 16, (d->prog_version >> 4) & 0xF, d->prog_version & 0xF);
++   if (d->has_sfi0)
++      log_sfi0(d->sfi0);
++   else
++      fprintf(stderr, " SFI0=absent");
++   fprintf(stderr, " psv_runtime=%u B\n", d->psv_size);
++   for (unsigned i = 0; i < d->nin; i++)
++      fprintf(stderr, B "  %s in [%u] %s%u sv=%s(%u) comp=%s reg=%u mask=0x%x always_reads=0x%x\n", label, i, d->in[i].name, d->in[i].sem_index,
++              sv_name(d->in[i].sv), d->in[i].sv, comp_name(d->in[i].comp), d->in[i].reg, d->in[i].mask, d->in[i].rw);
++   for (unsigned i = 0; i < d->nout; i++)
++      fprintf(stderr, B "  %s out[%u] %s%u sv=%s(%u) comp=%s reg=%u mask=0x%x never_writes=0x%x\n", label, i, d->out[i].name, d->out[i].sem_index,
++              sv_name(d->out[i].sv), d->out[i].sv, comp_name(d->out[i].comp), d->out[i].reg, d->out[i].mask, d->out[i].rw);
++   for (unsigned i = 0; i < d->npin; i++)
++      fprintf(stderr, B "  %s psv in [%u] %s rows=%u start_row=%u cols=%u start_col=%u kind=%u comp=%u interp=%s(%u)\n", label, i, d->pin[i].name,
++              d->pin[i].rows, d->pin[i].start_row, d->pin[i].cols, d->pin[i].start_col, d->pin[i].kind, d->pin[i].comp, interp_name(d->pin[i].interp),
++              d->pin[i].interp);
++   for (unsigned i = 0; i < d->npout; i++)
++      fprintf(stderr, B "  %s psv out[%u] %s rows=%u start_row=%u cols=%u start_col=%u kind=%u comp=%u interp=%s(%u)\n", label, i, d->pout[i].name,
++              d->pout[i].rows, d->pout[i].start_row, d->pout[i].cols, d->pout[i].start_col, d->pout[i].kind, d->pout[i].comp,
++              interp_name(d->pout[i].interp), d->pout[i].interp);
++   static const char *rt[] = { "invalid", "Sampler", "CBV", "SRVTyped", "SRVRaw", "SRVStructured", "UAVTyped", "UAVRaw", "UAVStructured",
++                               "UAVStructuredWithCounter" };
++   fprintf(stderr, B "  %s resources referenced: %u (bind-info stride %u)\n", label, d->nres, d->res_stride);
++   for (unsigned i = 0; i < d->nres; i++)
++      fprintf(stderr, B "    res[%u] %s(%u) space=%u registers %u..%u\n", i, d->res[i].type < ARRAY_SIZE(rt) ? rt[d->res[i].type] : "?",
++              d->res[i].type, d->res[i].space, d->res[i].lo, d->res[i].hi);
++}
++
++/* PS inputs must be produced by the VS at the same register with the same semantic (system-generated PS inputs excepted).
++ * Returns the number of mismatches; each one is logged. */
++static unsigned check_link(const char *label, const struct dxil_info *vs, const struct dxil_info *ps) {
++   unsigned bad = 0;
++   bool pos = false;
++   for (unsigned o = 0; o < vs->nout; o++)
++      pos |= vs->out[o].sv == 1;
++   if (!pos)
++      ++bad, fprintf(stderr, B "  link %s: VS has NO SV_Position output\n", label);
++   for (unsigned i = 0; i < ps->nin; i++) {
++      const struct sig_elem *in = &ps->in[i];
++      if (in->sv == 7 || in->sv == 9 || in->sv == 10)
++         continue; /* SV_PrimitiveID / SV_IsFrontFace / SV_SampleIndex: system-generated */
++      const struct sig_elem *match = NULL;
++      for (unsigned o = 0; o < vs->nout && !match; o++)
++         if (vs->out[o].reg == in->reg && vs->out[o].sem_index == in->sem_index && !_stricmp(vs->out[o].name, in->name))
++            match = &vs->out[o];
++      if (!match) {
++         ++bad;
++         fprintf(stderr, B "  link %s: PS input %s%u reg=%u mask=0x%x has NO matching VS output (same semantic + register)\n", label, in->name,
++                 in->sem_index, in->reg, in->mask);
++      } else if ((in->mask & ~match->mask) || match->comp != in->comp || match->sv != in->sv) {
++         ++bad;
++         fprintf(stderr, B "  link %s: PS input %s%u reg=%u mask=0x%x comp=%s sv=%u vs VS output mask=0x%x comp=%s sv=%u: MISMATCH\n", label, in->name,
++                 in->sem_index, in->reg, in->mask, comp_name(in->comp), in->sv, match->mask, comp_name(match->comp), match->sv);
++      }
++   }
++   fprintf(stderr, B "  link %s: %u mismatch(es) over %u PS inputs / %u VS outputs\n", label, bad, ps->nin, vs->nout);
++   return bad;
++}
++
++/* non-system VS inputs must be fed by an input-layout element with the same semantic */
++static unsigned check_layout(const char *label, const struct dxil_info *vs, const D3D12_INPUT_LAYOUT_DESC *il) {
++   unsigned bad = 0;
++   for (unsigned i = 0; i < vs->nin; i++) {
++      if (vs->in[i].sv)
++         continue;
++      bool found = false;
++      for (UINT e = 0; il && e < il->NumElements && !found; e++)
++         found = il->pInputElementDescs[e].SemanticIndex == vs->in[i].sem_index && !_stricmp(il->pInputElementDescs[e].SemanticName, vs->in[i].name);
++      if (!found)
++         ++bad, fprintf(stderr, B "  layout %s: VS input %s%u reg=%u has NO input-layout element\n", label, vs->in[i].name, vs->in[i].sem_index, vs->in[i].reg);
++   }
++   fprintf(stderr, B "  layout %s: %u missing over %u VS inputs / %u layout elements\n", label, bad, vs->nin, il ? il->NumElements : 0);
++   return bad;
++}
++
++/* ---- root-signature registry (filled by dzn_device_create_root_sig) ---- */
++struct rs_range { uint8_t kind; uint32_t space, lo, hi; }; /* kind: 0 SRV, 1 UAV, 2 CBV, 3 SAMPLER (D3D12_DESCRIPTOR_RANGE_TYPE order) */
++struct rs_entry {
++   const void *sig;
++   char text[2048];
++   unsigned nranges;
++   struct rs_range ranges[64];
++};
++static struct rs_entry g_rs[256]; /* M7B.3: 32 was filled by dzn meta pipelines first */
++static volatile long g_rs_count;
++
++static void rs_add(struct rs_entry *r, uint8_t kind, uint32_t space, uint32_t base, uint32_t num) {
++   if (r->nranges < ARRAY_SIZE(r->ranges))
++      r->ranges[r->nranges++] = (struct rs_range){ kind, space, base, num == UINT_MAX ? UINT_MAX : base + num - 1 };
++}
++
++void vitox_pso_root_sig_created(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC *desc, const void *sig) {
++   const long slot = InterlockedIncrement(&g_rs_count) - 1;
++   if (slot >= (long)ARRAY_SIZE(g_rs) || !desc)
++      return;
++   struct rs_entry *r = &g_rs[slot];
++   r->nranges = 0;
++   size_t n = 0;
++#define APP(...) (n += (size_t)snprintf(r->text + n, n < sizeof(r->text) ? sizeof(r->text) - n : 0, __VA_ARGS__), n = MIN2(n, sizeof(r->text) - 1))
++   static const char *rk[] = { "SRV", "UAV", "CBV", "SAMPLER" };
++   if (desc->Version == D3D_ROOT_SIGNATURE_VERSION_1_1 || desc->Version == D3D_ROOT_SIGNATURE_VERSION_1_2) {
++      /* Desc_1_1 and Desc_1_2 share NumParameters / pParameters (D3D12_ROOT_PARAMETER1) / NumStaticSamplers / pStaticSamplers / Flags;
++       * the static sampler struct differs (DESC vs DESC1) but starts with the same fields up to RegisterSpace/ShaderVisibility */
++      const D3D12_ROOT_SIGNATURE_DESC1 *d = &desc->Desc_1_1;
++      APP("version=0x%x flags=0x%x params=%u static_samplers=%u", desc->Version, d->Flags, d->NumParameters, d->NumStaticSamplers);
++      for (UINT p = 0; p < d->NumParameters; p++) {
++         const D3D12_ROOT_PARAMETER1 *rp = &d->pParameters[p];
++         switch (rp->ParameterType) {
++         case D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE:
++            APP(" | p%u TABLE vis=%d ranges=%u:", p, rp->ShaderVisibility, rp->DescriptorTable.NumDescriptorRanges);
++            for (UINT i = 0; i < rp->DescriptorTable.NumDescriptorRanges; i++) {
++               const D3D12_DESCRIPTOR_RANGE1 *dr = &rp->DescriptorTable.pDescriptorRanges[i];
++               APP(" %s(n=%d base=%u space=%u off=%u flags=0x%x)", dr->RangeType < 4 ? rk[dr->RangeType] : "?", (int)dr->NumDescriptors,
++                   dr->BaseShaderRegister, dr->RegisterSpace, dr->OffsetInDescriptorsFromTableStart, dr->Flags);
++               rs_add(r, (uint8_t)dr->RangeType, dr->RegisterSpace, dr->BaseShaderRegister, dr->NumDescriptors);
++            }
++            break;
++         case D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS:
++            APP(" | p%u CONSTANTS vis=%d b%u space=%u num32=%u", p, rp->ShaderVisibility, rp->Constants.ShaderRegister, rp->Constants.RegisterSpace,
++                rp->Constants.Num32BitValues);
++            rs_add(r, D3D12_DESCRIPTOR_RANGE_TYPE_CBV, rp->Constants.RegisterSpace, rp->Constants.ShaderRegister, 1);
++            break;
++         case D3D12_ROOT_PARAMETER_TYPE_CBV:
++         case D3D12_ROOT_PARAMETER_TYPE_SRV:
++         case D3D12_ROOT_PARAMETER_TYPE_UAV: {
++            const uint8_t kind = rp->ParameterType == D3D12_ROOT_PARAMETER_TYPE_CBV ? 2 : rp->ParameterType == D3D12_ROOT_PARAMETER_TYPE_SRV ? 0 : 1;
++            APP(" | p%u ROOT_%s vis=%d reg=%u space=%u", p, rk[kind], rp->ShaderVisibility, rp->Descriptor.ShaderRegister, rp->Descriptor.RegisterSpace);
++            rs_add(r, kind, rp->Descriptor.RegisterSpace, rp->Descriptor.ShaderRegister, 1);
++            break;
++         }
++         default:
++            APP(" | p%u type=%d", p, rp->ParameterType);
++            break;
++         }
++      }
++      const size_t ss_stride = desc->Version == D3D_ROOT_SIGNATURE_VERSION_1_2 ? sizeof(D3D12_STATIC_SAMPLER_DESC1) : sizeof(D3D12_STATIC_SAMPLER_DESC);
++      for (UINT i = 0; i < d->NumStaticSamplers; i++) {
++         const D3D12_STATIC_SAMPLER_DESC *ss = (const void *)((const uint8_t *)d->pStaticSamplers + i * ss_stride);
++         APP(" | static_sampler s%u space=%u vis=%d", ss->ShaderRegister, ss->RegisterSpace, ss->ShaderVisibility);
++         rs_add(r, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, ss->RegisterSpace, ss->ShaderRegister, 1);
++      }
++   } else {
++      APP("version=0x%x (not decoded)", desc->Version);
++   }
++#undef APP
++   r->sig = sig; /* published last */
++   fprintf(stderr, "[vitox-pso] root signature %p created: %s\n", sig, r->text);
++   fflush(stderr);
++}
++
++static const struct rs_entry *rs_find(const void *sig) {
++   const long n = MIN2(g_rs_count, (long)ARRAY_SIZE(g_rs));
++   for (long i = n - 1; i >= 0; i--)
++      if (g_rs[i].sig == sig)
++         return &g_rs[i];
++   return NULL;
++}
++
++/* every resource the DXIL references must sit inside a root-signature range of the same class */
++static unsigned check_bindings(const char *label, const struct dxil_info *d, const struct rs_entry *r, bool bindless) {
++   unsigned bad = 0;
++   for (unsigned i = 0; i < d->nres; i++) {
++      const uint32_t t = d->res[i].type;
++      const int kind = t == 1 ? 3 : t == 2 ? 2 : (t >= 3 && t <= 5) ? 0 : (t >= 6 && t <= 9) ? 1 : -1;
++      bool ok = false;
++      for (unsigned k = 0; r && k < r->nranges && !ok; k++)
++         ok = r->ranges[k].kind == kind && r->ranges[k].space == d->res[i].space && d->res[i].lo >= r->ranges[k].lo && d->res[i].hi <= r->ranges[k].hi;
++      if (!ok)
++         ++bad, fprintf(stderr, B "  bindings %s: res[%u] type=%u space=%u %u..%u is NOT represented in the root signature%s\n", label, i, t,
++                        d->res[i].space, d->res[i].lo, d->res[i].hi, bindless ? " (device is bindless: heap-indexed access may not need a range)" : "");
++   }
++   fprintf(stderr, B "  bindings %s: %u of %u referenced resources unrepresented (root signature %s)\n", label, bad, d->nres, r ? "known" : "NOT IN REGISTRY");
++   return bad;
++}
++
++/* ---- the differential control's pair, copied from the first successful base-path PSO without an input layout ---- */
++static struct {
++   bool captured;
++   D3D12_SHADER_BYTECODE vs, ps;
++   ID3D12RootSignature *root_sig;
++} g_ctl;
++
++static void capture_control(const char *path, HRESULT hr, const D3D12_PIPELINE_STATE_STREAM_DESC *stream) {
++   if (g_ctl.captured || strcmp(path, "base") || FAILED(hr))
++      return;
++   struct stream_map m;
++   map_stream(stream->pPipelineStateSubobjectStream, stream->SizeInBytes, &m);
++   const D3D12_INPUT_LAYOUT_DESC *il = DESC(stream->pPipelineStateSubobjectStream, m, INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC);
++   const D3D12_SHADER_BYTECODE *vs = DESC(stream->pPipelineStateSubobjectStream, m, VS, D3D12_SHADER_BYTECODE);
++   const D3D12_SHADER_BYTECODE *ps = DESC(stream->pPipelineStateSubobjectStream, m, PS, D3D12_SHADER_BYTECODE);
++   ID3D12RootSignature *const *rs = DESC(stream->pPipelineStateSubobjectStream, m, ROOT_SIGNATURE, ID3D12RootSignature *);
++   if ((il && il->NumElements) || !vs || !ps || !vs->BytecodeLength || !ps->BytecodeLength)
++      return;
++   void *v = malloc(vs->BytecodeLength), *p = malloc(ps->BytecodeLength);
++   if (!v || !p) {
++      free(v), free(p);
++      return;
++   }
++   memcpy(v, vs->pShaderBytecode, vs->BytecodeLength);
++   memcpy(p, ps->pShaderBytecode, ps->BytecodeLength);
++   g_ctl.vs = (D3D12_SHADER_BYTECODE){ v, vs->BytecodeLength };
++   g_ctl.ps = (D3D12_SHADER_BYTECODE){ p, ps->BytecodeLength };
++   g_ctl.root_sig = rs ? *rs : NULL;
++   if (g_ctl.root_sig)
++      ID3D12RootSignature_AddRef(g_ctl.root_sig);
++   g_ctl.captured = true;
++   fprintf(stderr, "[vitox-pso] M7B.2: captured the differential control pair (VS %zu B, PS %zu B, root signature %p) for the bisect\n",
++           (size_t)vs->BytecodeLength, (size_t)ps->BytecodeLength, (void *)g_ctl.root_sig);
++   fflush(stderr);
++}
++
++/* ---- format support ---- */
++static void log_format(struct dzn_device *device, DXGI_FORMAT f, const char *name) {
++   D3D12_FEATURE_DATA_FORMAT_SUPPORT fs = { .Format = f };
++   const HRESULT hr = ID3D12Device4_CheckFeatureSupport(device->dev, D3D12_FEATURE_FORMAT_SUPPORT, &fs, sizeof(fs));
++   D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS ms = { .Format = f, .SampleCount = 1 };
++   const HRESULT hr2 = ID3D12Device4_CheckFeatureSupport(device->dev, D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &ms, sizeof(ms));
++   const UINT s1 = fs.Support1;
++   fprintf(stderr,
++           B "format %-22s (%2d): hr=0x%08lx Support1=0x%08x Support2=0x%08x | TEXTURE2D=%d RENDER_TARGET=%d BLENDABLE=%d DEPTH_STENCIL=%d SHADER_LOAD=%d "
++             "SHADER_SAMPLE=%d MULTISAMPLE_RT=%d | ms(count=1) hr=0x%08lx quality_levels=%u\n",
++           name, f, (unsigned long)hr, s1, (unsigned)fs.Support2, !!(s1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D), !!(s1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET),
++           !!(s1 & D3D12_FORMAT_SUPPORT1_BLENDABLE), !!(s1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL), !!(s1 & D3D12_FORMAT_SUPPORT1_SHADER_LOAD),
++           !!(s1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE), !!(s1 & D3D12_FORMAT_SUPPORT1_MULTISAMPLE_RENDERTARGET), (unsigned long)hr2,
++           ms.NumQualityLevels);
++}
++
++/* ---- the bisect ---- */
++#define N_TESTS 15
++
++void vitox_pso_bisect(struct dzn_device *device, const D3D12_PIPELINE_STATE_STREAM_DESC *failed) {
++   static volatile long once;
++   if (InterlockedIncrement(&once) != 1)
++      return;
++   struct dzn_physical_device *pdev = container_of(device->vk.physical, struct dzn_physical_device, vk);
++   fprintf(stderr, B "==== M7B.2 DIAGNOSTIC PSO FIELD BISECT (copies only; the real variant stays NULL and contained) ====\n");
++   fprintf(stderr, B "device: shader_model=0x%x root_sig_version=0x%x bindless=%d ViewInstancingTier=%d IndependentFrontAndBackStencilRefMask=%d "
++                     "DynamicDepthBias=%d Native16Bit=%d Int64ShaderOps=%d ROVs=%d StencilRef(PSSpecifiedStencilRef)=%d TypedUAVLoadAdditionalFormats=%d\n",
++           pdev->shader_model, pdev->root_sig_version, device->bindless, pdev->options3.ViewInstancingTier,
++           pdev->options14.IndependentFrontAndBackStencilRefMaskSupported, pdev->options16.DynamicDepthBiasSupported, pdev->options4.Native16BitShaderOpsSupported,
++           pdev->options1.Int64ShaderOps, pdev->options.ROVsSupported, pdev->options.PSSpecifiedStencilRefSupported,
++           pdev->options.TypedUAVLoadAdditionalFormats);
++
++   /* 2. format support */
++   log_format(device, DXGI_FORMAT_R8G8B8A8_UNORM, "R8G8B8A8_UNORM");
++   log_format(device, DXGI_FORMAT_B8G8R8A8_UNORM, "B8G8R8A8_UNORM");
++   log_format(device, DXGI_FORMAT_D32_FLOAT_S8X24_UINT, "D32_FLOAT_S8X24_UINT");
++   log_format(device, DXGI_FORMAT_D24_UNORM_S8_UINT, "D24_UNORM_S8_UINT");
++   log_format(device, DXGI_FORMAT_D32_FLOAT, "D32_FLOAT");
++
++   const size_t size = failed->SizeInBytes;
++   if (size > MAX_GFX_PIPELINE_STATE_STREAM_SIZE) {
++      fprintf(stderr, B "stream too large (%zu) - bisect aborted\n", size);
++      fflush(stderr);
++      return;
++   }
++   struct stream_map m;
++   map_stream(failed->pPipelineStateSubobjectStream, size, &m);
++   const void *fs = failed->pPipelineStateSubobjectStream;
++   const D3D12_SHADER_BYTECODE *fvs = DESC(fs, m, VS, D3D12_SHADER_BYTECODE), *fps = DESC(fs, m, PS, D3D12_SHADER_BYTECODE);
++   const D3D12_INPUT_LAYOUT_DESC *fil = DESC(fs, m, INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC);
++   const vitox_rt_format_array *frt = DESC(fs, m, RENDER_TARGET_FORMATS, vitox_rt_format_array);
++   ID3D12RootSignature *const *frs = DESC(fs, m, ROOT_SIGNATURE, ID3D12RootSignature *);
++
++   /* 4. DXIL signature inventory + linkage */
++   static struct dxil_info dvs, dps, cvs, cps; /* large: keep off the stack */
++   inspect_dxil(fvs, &dvs);
++   inspect_dxil(fps, &dps);
++   inspect_dxil(g_ctl.captured ? &g_ctl.vs : NULL, &cvs);
++   inspect_dxil(g_ctl.captured ? &g_ctl.ps : NULL, &cps);
++   log_dxil("failing VS", fvs, &dvs);
++   log_dxil("failing PS", fps, &dps);
++   if (g_ctl.captured) {
++      log_dxil("control VS", &g_ctl.vs, &cvs);
++      log_dxil("control PS", &g_ctl.ps, &cps);
++   } else {
++      fprintf(stderr, B "control pair NOT captured: tests 10-14 will be SKIPPED\n");
++   }
++   check_link("failing VS -> failing PS", &dvs, &dps);
++   check_layout("failing VS <- failed input layout", &dvs, fil);
++   for (unsigned i = 0; i < dps.nout; i++)
++      if (dps.out[i].sv == 64)
++         fprintf(stderr, B "  failing PS writes SV_Target%u (reg %u, comp=%s, mask=0x%x) | RTV count=%u format[%u]=%d\n", dps.out[i].sem_index,
++                 dps.out[i].reg, comp_name(dps.out[i].comp), dps.out[i].mask, frt ? frt->NumRenderTargets : 0, dps.out[i].reg,
++                 frt && dps.out[i].reg < 8 ? frt->RTFormats[dps.out[i].reg] : -1);
++   const unsigned link10 = g_ctl.captured ? check_link("control VS -> failing PS (test 10)", &cvs, &dps) : 1;
++   const unsigned layout10 = g_ctl.captured ? check_layout("control VS <- failed input layout (test 10)", &cvs, fil) : 1;
++   const unsigned link11 = g_ctl.captured ? check_link("failing VS -> control PS (test 11)", &dvs, &cps) : 1;
++   if (g_ctl.captured)
++      check_link("control VS -> control PS (tests 12/13)", &cvs, &cps);
++
++   /* 5. root signature / binding summary */
++   const void *fsig = frs ? *frs : NULL;
++   const struct rs_entry *fr = rs_find(fsig), *cr = g_ctl.captured ? rs_find(g_ctl.root_sig) : NULL;
++   fprintf(stderr, B "failing root signature %p: %s\n", fsig, fr ? fr->text : "(not in registry)");
++   if (g_ctl.captured)
++      fprintf(stderr, B "control root signature %p: %s\n", (void *)g_ctl.root_sig, cr ? cr->text : "(not in registry)");
++   check_bindings("failing VS", &dvs, fr, device->bindless);
++   check_bindings("failing PS", &dps, fr, device->bindless);
++   if (g_ctl.captured) {
++      check_bindings("control VS vs failing root sig (test 12)", &cvs, fr, device->bindless);
++      check_bindings("control PS vs failing root sig (test 12)", &cps, fr, device->bindless);
++   }
++   fflush(stderr);
++
++   /* 3. the matrix: each test starts again from an exact copy of the failed stream */
++   static const char *what[N_TESTS] = {
++      "BASE exact copy, no changes",
++      "stencil disabled (depth + DSV kept)",
++      "depth disabled (stencil + DSV kept)",
++      "depth + stencil disabled (DSV kept)",
++      "depth + stencil disabled + DSV UNKNOWN",
++      "stencil ReadMask 0x00 -> 0xFF only",
++      "stencil WriteMask 0xFF -> 0x00 only",
++      "DSV D32_FLOAT_S8X24_UINT -> D24_UNORM_S8_UINT only",
++      "stencil disabled + DSV -> D32_FLOAT (depth kept)",
++      "RTV R8G8B8A8_UNORM -> B8G8R8A8_UNORM only",
++      "VS only -> control VS",
++      "PS only -> control PS",
++      "VS+PS -> control pair + control input layout (no elements); failed DS/RTV kept",
++      "VS+PS -> control pair + control input layout; depth/stencil disabled + DSV UNKNOWN",
++      "root signature -> control root signature (Vita3K shaders kept) [conditional]",
++   };
++   HRESULT res[N_TESTS];
++   bool ran[N_TESTS] = { 0 };
++   uintptr_t buf[MAX_GFX_PIPELINE_STATE_STREAM_SIZE / sizeof(uintptr_t)];
++   for (int t = 0; t < N_TESTS; t++) {
++      memcpy(buf, fs, size);
++      D3D12_DEPTH_STENCIL_DESC1 *ds1 = DESC(buf, m, DEPTH_STENCIL1, D3D12_DEPTH_STENCIL_DESC1);
++      D3D12_DEPTH_STENCIL_DESC2 *ds2 = DESC(buf, m, DEPTH_STENCIL2, D3D12_DEPTH_STENCIL_DESC2);
++      D3D12_DEPTH_STENCIL_DESC *ds0 = DESC(buf, m, DEPTH_STENCIL, D3D12_DEPTH_STENCIL_DESC);
++      DXGI_FORMAT *dsv = DESC(buf, m, DEPTH_STENCIL_FORMAT, DXGI_FORMAT);
++      vitox_rt_format_array *rt = DESC(buf, m, RENDER_TARGET_FORMATS, vitox_rt_format_array);
++      D3D12_SHADER_BYTECODE *vs = DESC(buf, m, VS, D3D12_SHADER_BYTECODE), *ps = DESC(buf, m, PS, D3D12_SHADER_BYTECODE);
++      D3D12_INPUT_LAYOUT_DESC *il = DESC(buf, m, INPUT_LAYOUT, D3D12_INPUT_LAYOUT_DESC);
++      ID3D12RootSignature **rs = DESC(buf, m, ROOT_SIGNATURE, ID3D12RootSignature *);
++      const bool has_ds = ds1 || ds2 || ds0;
++#define SET_DS(field, v) do { if (ds1) ds1->field = (v); if (ds2) ds2->field = (v); if (ds0) ds0->field = (v); } while (0)
++      const char *skip = NULL;
++      char why[200] = "";
++      switch (t) {
++      case 0: break;
++      case 1: if (!has_ds) skip = "no depth-stencil subobject"; else SET_DS(StencilEnable, FALSE); break;
++      case 2: if (!has_ds) skip = "no depth-stencil subobject"; else SET_DS(DepthEnable, FALSE); break;
++      case 3: if (!has_ds) skip = "no depth-stencil subobject"; else { SET_DS(DepthEnable, FALSE); SET_DS(StencilEnable, FALSE); } break;
++      case 4:
++         if (!has_ds || !dsv) skip = "no depth-stencil / DSV-format subobject";
++         else { SET_DS(DepthEnable, FALSE); SET_DS(StencilEnable, FALSE); *dsv = DXGI_FORMAT_UNKNOWN; }
++         break;
++      case 5:
++         if (ds1) ds1->StencilReadMask = 0xFF;
++         else if (ds0) ds0->StencilReadMask = 0xFF;
++         else if (ds2) ds2->FrontFace.StencilReadMask = ds2->BackFace.StencilReadMask = 0xFF;
++         else skip = "no depth-stencil subobject";
++         break;
++      case 6:
++         if (ds1) ds1->StencilWriteMask = 0x00;
++         else if (ds0) ds0->StencilWriteMask = 0x00;
++         else if (ds2) ds2->FrontFace.StencilWriteMask = ds2->BackFace.StencilWriteMask = 0x00;
++         else skip = "no depth-stencil subobject";
++         break;
++      case 7: if (!dsv) skip = "no DSV-format subobject"; else *dsv = DXGI_FORMAT_D24_UNORM_S8_UINT; break;
++      case 8: if (!has_ds || !dsv) skip = "no depth-stencil / DSV-format subobject"; else { SET_DS(StencilEnable, FALSE); *dsv = DXGI_FORMAT_D32_FLOAT; } break;
++      case 9: if (!rt || !rt->NumRenderTargets) skip = "no render target"; else rt->RTFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM; break;
++      case 10:
++         if (!g_ctl.captured || !vs) skip = "control pair not captured";
++         else if (link10 || layout10) {
++            snprintf(why, sizeof(why), "control VS cannot feed the failing PS structurally (%u link mismatch(es), %u layout gap(s)) - no invalid control built",
++                     link10, layout10);
++            skip = why;
++         } else *vs = g_ctl.vs;
++         break;
++      case 11:
++         if (!g_ctl.captured || !ps) skip = "control pair not captured";
++         else if (link11) {
++            snprintf(why, sizeof(why), "failing VS cannot feed the control PS structurally (%u link mismatch(es)) - no invalid control built", link11);
++            skip = why;
++         } else *ps = g_ctl.ps;
++         break;
++      case 12:
++      case 13:
++         if (!g_ctl.captured || !vs || !ps) { skip = "control pair not captured"; break; }
++         *vs = g_ctl.vs, *ps = g_ctl.ps;
++         if (il)
++            il->NumElements = 0, il->pInputElementDescs = NULL;
++         if (t == 13) {
++            if (!has_ds || !dsv) { skip = "no depth-stencil / DSV-format subobject"; break; }
++            SET_DS(DepthEnable, FALSE);
++            SET_DS(StencilEnable, FALSE);
++            *dsv = DXGI_FORMAT_UNKNOWN;
++         }
++         break;
++      case 14: {
++         /* only when the shader-pair tests implicate shaders/root signature: every ran test 1..9 failed and 12 or 13 succeeded */
++         bool all_fail = true;
++         for (int k = 1; k <= 9; k++)
++            all_fail &= !ran[k] || FAILED(res[k]);
++         const bool shader_ok = (ran[12] && SUCCEEDED(res[12])) || (ran[13] && SUCCEEDED(res[13]));
++         if (!all_fail || !shader_ok)
++            skip = "NOT RUN by rule: tests 1-9 did not all fail, or neither 12 nor 13 succeeded";
++         else if (!rs || !g_ctl.root_sig)
++            skip = "no control root signature";
++         else
++            *rs = g_ctl.root_sig;
++         break;
++      }
++      }
++#undef SET_DS
++      if (skip) {
++         fprintf(stderr, B "test %2d SKIPPED: %s | %s\n", t, what[t], skip);
++         continue;
++      }
++      ID3D12PipelineState *state = NULL;
++      const D3D12_PIPELINE_STATE_STREAM_DESC desc = { .SizeInBytes = size, .pPipelineStateSubobjectStream = buf };
++      res[t] = ID3D12Device4_CreatePipelineState(device->dev, &desc, &IID_ID3D12PipelineState, (void **)&state);
++      ran[t] = true;
++      const HRESULT removed = ID3D12Device_GetDeviceRemovedReason(device->dev);
++      fprintf(stderr, B "test %2d hr=0x%08lx %s removed=0x%08lx | %s\n", t, (unsigned long)res[t], SUCCEEDED(res[t]) ? "S_OK      " : "FAILED    ",
++              (unsigned long)removed, what[t]);
++      if (state)
++         ID3D12PipelineState_Release(state); /* diagnostic PSO: released immediately, never used */
++      fflush(stderr);
++   }
++
++   fprintf(stderr, B "SUMMARY:");
++   for (int t = 0; t < N_TESTS; t++)
++      fprintf(stderr, " t%d=%s", t, !ran[t] ? "skip" : SUCCEEDED(res[t]) ? "OK" : "FAIL");
++   fprintf(stderr, "\n" B "==== M7B.2 bisect done: the real variant was NOT modified and stays NULL ====\n");
++   fflush(stderr);
++}
++
++#endif
