@@ -6,7 +6,7 @@
 [Vita3K](https://github.com/Vita3K/Vita3K) emulator core as a UWP app with a console-friendly library
 launcher, so commercial Vita games and homebrew can be installed from a USB drive and played on an Xbox.
 
-> Status: private, work in progress. No releases yet.
+> Status: work in progress. Download the latest build from [Releases](https://github.com/nirally/Vitox/releases).
 
 By **Nirally**, built with Claude.
 
@@ -56,11 +56,30 @@ the Vitox quick menu.
 | Catherine: Full Body | PCSG01179 | JP | ✅ Playable | Gameplay, menus and text OK; save/load not yet tested |
 | Persona 3: Dancing in Moonlight | PCSE01274 | US | ✅ Playable | Plays without issues |
 | Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
-| Sly Cooper: Thieves in Time | PCSA00068 | US | 🔴 Does not install | The NoNpDrm decryption step fails during installation (under investigation) |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
 (working or not), please let me know (open an issue) with the game, its title ID and what you saw, so I can add
 it to the table.
+
+## Installing on Xbox
+
+These steps assume your Xbox Series X|S is already in **Developer Mode**.
+
+1. Download `release.zip` from [Releases](https://github.com/nirally/Vitox/releases) on your PC and extract it. It
+   contains `Vitox_<version>_x64.msix` (the app), its certificate (`.cer`) and `Microsoft.VCLibs.x64.14.00.appx`
+   (a required dependency).
+2. On the Xbox, open **Dev Home** and note the **Remote Access** address (enable *Remote Access* in Dev Home
+   settings if needed, and set a username and password).
+3. On the PC, open that address in a browser (for example `https://192.168.1.50:11443`) to open the
+   **Xbox Device Portal**, and sign in.
+4. In **Home > My games & apps**, choose **Add**, select the `.msix` file and press **Next**. Add
+   `Microsoft.VCLibs.x64.14.00.appx` as a dependency, then press **Start** and wait until the installation completes.
+5. On the Xbox, find **Vitox** under *Games & apps*. Set it to run as a **Game** (press the Menu button on the tile >
+   *View details* > *App type: Game*) so it gets the full game memory.
+6. Start Vitox. On first start it asks for the PS Vita firmware (see [Firmware](#firmware)); then install your games
+   with the **+** tile from a USB drive.
+
+To update, install the new `.msix` the same way; your games, saves and settings are kept.
 
 ## Firmware
 
