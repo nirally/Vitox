@@ -41,7 +41,7 @@ the Vitox quick menu.
 - **Per-game settings**: resolution, shader options and overlay can be set per title; uninstall with or
   without save data.
 - **Saves, trophies, DLC**: save data and trophies are stored as on Vita3K; trophy unlocks show a banner
-  (top-left, so it never covers the statistics overlay); DLC is found in `ux0:addcont/<TITLE_ID>`.
+  (top-left, so it never covers the statistics overlay); DLC is found in `ux0:addcont/<TITLE_ID>`. DLC and the trophy banner are verified on console.
 - **Audio** through an XAudio2 backend, **controllers** through Windows.Gaming.Input, touch emulated with the
   stick cursor.
 
@@ -51,16 +51,25 @@ the Vitox quick menu.
 |---|---|---|---|---|
 | VA-11 HALL-A: Cyberpunk Bartender Action | PCSE00756 | US | ✅ Playable | Tutorial + chapters, saves, trophies, 30-minute stability run |
 | Danganronpa Another Episode: Ultra Despair Girls | PCSE00692 | US | ✅ Playable | Picture, sound and movies OK; save/load OK |
-| Persona 4: Dancing All Night | PCSE00764 | US | ✅ Playable | Models, rhythm sync and input timing OK; save/load OK; DLC detection fixed (being verified) |
+| Persona 4: Dancing All Night | PCSE00764 | US | ✅ Playable | Models, rhythm sync and input timing OK; save/load OK; DLC works |
 | Gravity Rush | PCSA00011 | US | ✅ Playable | Geometry, lighting and character colours fixed; title screen needs a touch (stick cursor) |
 | Catherine: Full Body | PCSG01179 | JP | ✅ Playable | Gameplay, menus and text OK; save/load not yet tested |
-| Persona 3: Dancing in Moonlight | PCSE01274 | US | 🟡 Boots | Opening movie plays; gameplay not yet tested |
-| Uncharted: Golden Abyss | PCSA00029 | US | 🟡 Menus | Reaches the title screen at 60 FPS; some texture artifacts; gameplay not yet tested |
+| Persona 3: Dancing in Moonlight | PCSE01274 | US | ✅ Playable | Plays without issues |
+| Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
 | Sly Cooper: Thieves in Time | PCSA00068 | US | 🔴 Does not install | The NoNpDrm decryption step fails during installation (under investigation) |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
 (working or not), please let me know (open an issue) with the game, its title ID and what you saw, so I can add
 it to the table.
+
+## Screenshots
+
+Captured on an Xbox Series console running Vitox.
+
+| | |
+|---|---|
+| ![Catherine: Full Body](docs/images/catherine-full-body.webp) | ![Uncharted: Golden Abyss](docs/images/uncharted-golden-abyss.webp) |
+| ![Gravity Rush](docs/images/gravity-rush.webp) | ![Persona 3: Dancing in Moonlight](docs/images/persona3-dancing.webp) |
 
 ## How it works
 
