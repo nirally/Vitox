@@ -60,6 +60,7 @@ the Vitox quick menu, and **L3** to show a cursor that simulates the Vita's touc
 | Catherine: Full Body | PCSG01179 | JP | ✅ Playable | Gameplay, menus and text OK; save/load not yet tested |
 | Persona 3: Dancing in Moonlight | PCSE01274 | US | ✅ Playable | Plays without issues |
 | Persona 5: Dancing in Starlight | PCSE01275 | US | ✅ Playable | Plays without issues |
+| Hatsune Miku: Project DIVA X | PCSE00867 | US | ✅ Playable | Plays without issues |
 | Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
