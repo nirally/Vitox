@@ -21,7 +21,7 @@ launcher, so commercial Vita games and homebrew can be installed from a USB driv
 
 The library shows every installed game with its artwork. Press **A** to start a game, **Menu** for per-game
 options, **RB** for Settings, and the **+** tile to install games from a USB drive. In game, press **R3** for
-the Vitox quick menu.
+the Vitox quick menu, and **L3** to show a cursor that simulates the Vita's touch screen.
 
 ## Highlights
 
@@ -45,8 +45,9 @@ the Vitox quick menu.
   without save data.
 - **Saves, trophies, DLC**: save data and trophies are stored as on Vita3K; trophy unlocks show a banner
   (top-left, so it never covers the statistics overlay); DLC is found in `ux0:addcont/<TITLE_ID>`. DLC and the trophy banner are verified on console.
-- **Audio** through an XAudio2 backend, **controllers** through Windows.Gaming.Input, touch emulated with the
-  stick cursor.
+- **Audio** through an XAudio2 backend, **controllers** through Windows.Gaming.Input.
+- **Touch screen**: press **L3** in game to show a cursor that simulates touch. Move it with the left stick and press **A**
+  to tap; press **L3** again to hide it.
 
 ## Tested games
 
@@ -55,9 +56,10 @@ the Vitox quick menu.
 | VA-11 HALL-A: Cyberpunk Bartender Action | PCSE00756 | US | ✅ Playable | Tutorial + chapters, saves, trophies, 30-minute stability run |
 | Danganronpa Another Episode: Ultra Despair Girls | PCSE00692 | US | ✅ Playable | Picture, sound and movies OK; save/load OK |
 | Persona 4: Dancing All Night | PCSE00764 | US | ✅ Playable | Models, rhythm sync and input timing OK; save/load OK; DLC works |
-| Gravity Rush | PCSA00011 | US | ✅ Playable | Geometry, lighting and character colours fixed; title screen needs a touch (stick cursor) |
+| Gravity Rush | PCSA00011 | US | ✅ Playable | Geometry, lighting and character colours fixed; title screen needs a touch (press **L3** for the touch cursor) |
 | Catherine: Full Body | PCSG01179 | JP | ✅ Playable | Gameplay, menus and text OK; save/load not yet tested |
 | Persona 3: Dancing in Moonlight | PCSE01274 | US | ✅ Playable | Plays without issues |
+| Persona 5: Dancing in Starlight | PCSE01275 | US | ✅ Playable | Plays without issues |
 | Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
