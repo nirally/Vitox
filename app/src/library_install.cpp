@@ -36,12 +36,47 @@ namespace {
 std::mutex g_lm;
 std::wstring g_ldir;
 bool g_show_homebrew = true;
+std::wstring g_install_folder; // 0.1.1.0: "" = the whole drive
+
+std::string utf8(const std::wstring &w) {
+    if (w.empty())
+        return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
+    return s;
+}
+std::wstring from_utf8(const std::string &s) {
+    if (s.empty())
+        return {};
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring w(static_cast<size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+    return w;
+}
+// "Vita/Games\" -> "\Vita\Games"; "" stays "" (whole drive); only a plain relative path is kept
+std::wstring normalize_folder(std::wstring f) {
+    for (wchar_t &c : f)
+        if (c == L'/')
+            c = L'\\';
+    while (f.size() > 1 && f.back() == L'\\')
+        f.pop_back();
+    if (f.empty())
+        return f;
+    if (f[0] != L'\\')
+        f = L"\\" + f;
+    if (f.find(L"..") != std::wstring::npos || f.find(L':') != std::wstring::npos)
+        return {};
+    return f;
+}
 
 void library_save_locked() {
     if (g_ldir.empty())
         return;
-    std::ofstream f(g_ldir + L"\\vitox-library.txt", std::ios::trunc);
+    std::ofstream f(g_ldir + L"\\vitox-library.txt", std::ios::trunc | std::ios::binary);
     f << "# Vitox library settings (launcher Settings > Library)\nshow_homebrew=" << (g_show_homebrew ? 1 : 0) << "\n";
+    f << "# USB install folder: empty = the whole drive, else a folder from the drive's root (\\ = the root)\ninstall_folder="
+      << utf8(g_install_folder) << "\n";
 }
 } // namespace
 
@@ -55,8 +90,23 @@ void library_load(const std::wstring &local_state) {
             line.pop_back();
         if (line == "show_homebrew=0" || line == "show_homebrew=1")
             g_show_homebrew = line.back() == '1', found = true;
+        else if (line.rfind("install_folder=", 0) == 0)
+            g_install_folder = normalize_folder(from_utf8(line.substr(15)));
     }
-    log_line(Log::Lifecycle, "vitox library: show homebrew %s%s", g_show_homebrew ? "ON" : "OFF", found ? "" : " [default]");
+    log_line(Log::Lifecycle, "vitox library: show homebrew %s%s | USB install folder %s", g_show_homebrew ? "ON" : "OFF", found ? "" : " [default]",
+        g_install_folder.empty() ? "(whole drive)" : utf8(g_install_folder).c_str());
+}
+
+std::wstring library_install_folder() {
+    std::lock_guard<std::mutex> lock(g_lm);
+    return g_install_folder;
+}
+
+void library_set_install_folder(const std::wstring &folder) {
+    std::lock_guard<std::mutex> lock(g_lm);
+    g_install_folder = normalize_folder(folder);
+    library_save_locked();
+    log_line(Log::Lifecycle, "vitox library: USB install folder set to %s, saved", g_install_folder.empty() ? "(whole drive)" : utf8(g_install_folder).c_str());
 }
 
 bool library_show_homebrew() {
@@ -254,6 +304,7 @@ struct Installer::Impl {
     std::thread worker;
     std::atomic<bool> running{ false };
     std::vector<Source> sources; // written by the scan worker only
+    std::wstring scan_message;   // 0.1.1.0: the Files-phase message of the last scan (restored by back())
     size_t current = SIZE_MAX;   // 0.0.30.0: the archive being analysed / installed (index into sources)
     // the open archive (worker-owned between analyze and close)
     std::unique_ptr<Reader> reader;
@@ -333,14 +384,32 @@ struct Installer::Impl {
         std::error_code ec;
         fs::remove_all(fs::path(dev) / L".vitox-install", ec); // what an interrupted installation left
         std::vector<Source> found;
-        unsigned drives = 0;
+        unsigned drives = 0, folder_found = 0;
         const auto t0 = GetTickCount64();
+        // 0.1.1.0: with an install folder set (Settings > Library) only that folder's own files are listed
+        const std::wstring only = library_install_folder();
         for (StorageFolder const &d : KnownFolders::RemovableDevices().GetFoldersAsync().get()) {
             if (stop)
                 return;
             ++drives;
             std::vector<StorageFile> files;
             bool queried = false;
+            if (!only.empty()) {
+                try {
+                    const StorageFolder folder = only == L"\\" ? d : d.GetFolderAsync(winrt::hstring(only.substr(1))).get();
+                    ++folder_found;
+                    for (auto const &f : folder.GetFilesAsync().get()) {
+                        const std::wstring n(f.Name());
+                        if ((ends_with_ci(n, L".zip") || ends_with_ci(n, L".vpk")) && files.size() < kMaxFiles)
+                            files.push_back(f);
+                    }
+                } catch (winrt::hresult_error const &e) {
+                    log_line(Log::Lifecycle, "installer: drive '%s' has no install folder '%s' (0x%08lX) - skipped", narrow(std::wstring(d.DisplayName())).c_str(),
+                        narrow(only).c_str(), static_cast<unsigned long>(e.code()));
+                    continue;
+                }
+                queried = true;
+            } else
             try {
                 Search::QueryOptions opts(Search::CommonFileQuery::DefaultQuery, winrt::single_threaded_vector<winrt::hstring>({ L".zip", L".vpk" }));
                 opts.FolderDepth(Search::FolderDepth::Deep);
@@ -394,8 +463,14 @@ struct Installer::Impl {
             s.files.push_back(src.info);
         s.drives = drives;
         s.message = drives == 0 ? L"No USB drive found. Connect a USB drive to the console, then press Y to look again."
-            : s.files.empty()   ? L"No .zip or .vpk files on the USB drive. Copy your archives to it, then press Y to look again."
-                                : L"";
+            : !only.empty() && folder_found == 0
+            ? L"The install folder " + only + L" is not on the USB drive. Choose another folder in Settings > Library, or create it and copy your archives there."
+            : s.files.empty() && !only.empty()
+            ? L"No .zip or .vpk files in " + only + L" on the USB drive. Copy your archives there (or change the folder in Settings > Library), then press Y to look again."
+            : s.files.empty() ? L"No .zip or .vpk files on the USB drive. Copy your archives to it, then press Y to look again."
+                              : L"";
+        s.folder = only;
+        scan_message = s.message;
         s.phase = Phase::Files;
         ++s.version;
     }
@@ -890,6 +965,136 @@ struct Installer::Impl {
     }
 };
 
+// ================================================================ 0.1.1.0: USB folder browser (Settings > Library)
+struct FolderBrowser::Impl {
+    mutable std::mutex m;
+    FolderView v; // guarded by m
+    std::thread worker;
+    std::atomic<bool> stop{ false };
+    // worker-owned between jobs (each job joins the previous one first)
+    std::vector<winrt::Windows::Storage::StorageFolder> drives;
+    std::vector<winrt::Windows::Storage::StorageFolder> stack; // [drive root, sub, sub, ...]
+    std::vector<winrt::Windows::Storage::StorageFolder> subs;  // the open folder's sub-folders (parallel to v.entries)
+
+    ~Impl() {
+        stop = true;
+        join();
+    }
+    void join() {
+        if (worker.joinable())
+            worker.join();
+    }
+    template <typename F>
+    void run(F f) {
+        join();
+        {
+            std::lock_guard<std::mutex> lock(m);
+            v.loading = true;
+            ++v.version;
+        }
+        worker = std::thread([this, f] {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            FolderView out;
+            try {
+                f(out);
+            } catch (winrt::hresult_error const &e) {
+                log_line(Log::Lifecycle, "folder browser: WinRT error 0x%08lX %s", static_cast<unsigned long>(e.code()), narrow(std::wstring(e.message())).c_str());
+                out.message = L"Error: " + std::wstring(e.message());
+            } catch (std::exception const &e) {
+                log_line(Log::Lifecycle, "folder browser: error %s", e.what());
+                out.message = L"Error: " + widen(e.what());
+            }
+            winrt::uninit_apartment();
+            std::lock_guard<std::mutex> lock(m);
+            out.loading = false;
+            out.version = v.version + 1;
+            v = std::move(out);
+        });
+    }
+    std::wstring path_of() const {
+        if (stack.size() <= 1)
+            return L"\\";
+        std::wstring p;
+        for (size_t i = 1; i < stack.size(); ++i)
+            p += L"\\" + std::wstring(stack[i].Name());
+        return p;
+    }
+    void list_drives(FolderView &out) {
+        stack.clear();
+        subs.clear();
+        drives.clear();
+        for (auto const &d : winrt::Windows::Storage::KnownFolders::RemovableDevices().GetFoldersAsync().get()) {
+            drives.push_back(d);
+            out.entries.push_back(std::wstring(d.DisplayName()));
+        }
+        out.at_drives = true;
+        if (drives.empty())
+            out.message = L"No USB drive found. Connect a USB drive to the console, then press Y to look again.";
+    }
+    void list_open(FolderView &out) {
+        subs.clear();
+        std::vector<std::pair<std::wstring, winrt::Windows::Storage::StorageFolder>> named;
+        for (auto const &d : stack.back().GetFoldersAsync().get()) {
+            const std::wstring n(d.Name());
+            if (n.empty() || n[0] == L'$' || n[0] == L'.' || n == L"System Volume Information")
+                continue;
+            named.emplace_back(n, d);
+        }
+        std::sort(named.begin(), named.end(), [](auto const &a, auto const &b) { return _wcsicmp(a.first.c_str(), b.first.c_str()) < 0; });
+        for (auto &[n, d] : named) {
+            out.entries.push_back(n);
+            subs.push_back(d);
+        }
+        out.at_drives = false;
+        out.drive = std::wstring(stack.front().DisplayName());
+        out.path = path_of();
+    }
+};
+
+FolderBrowser::FolderBrowser() : impl_(std::make_unique<Impl>()) {}
+FolderBrowser::~FolderBrowser() = default;
+
+void FolderBrowser::open_root() {
+    Impl &m = *impl_;
+    m.run([&m](FolderView &out) { m.list_drives(out); });
+}
+
+void FolderBrowser::enter(size_t i) {
+    Impl &m = *impl_;
+    m.join();
+    m.run([&m, i](FolderView &out) {
+        if (m.stack.empty()) {
+            if (i >= m.drives.size())
+                return m.list_drives(out);
+            m.stack.push_back(m.drives[i]);
+        } else {
+            if (i >= m.subs.size())
+                return m.list_open(out);
+            m.stack.push_back(m.subs[i]);
+        }
+        m.list_open(out);
+    });
+}
+
+void FolderBrowser::up() {
+    Impl &m = *impl_;
+    m.join();
+    m.run([&m](FolderView &out) {
+        if (m.stack.size() <= 1)
+            return m.list_drives(out);
+        m.stack.pop_back();
+        m.list_open(out);
+    });
+}
+
+bool FolderBrowser::poll(uint64_t have, FolderView &out) {
+    std::lock_guard<std::mutex> lock(impl_->m);
+    if (impl_->v.version == have)
+        return false;
+    out = impl_->v;
+    return true;
+}
+
 Installer::Installer(std::wstring dev_root) : impl_(std::make_unique<Impl>(std::move(dev_root))) {}
 Installer::~Installer() = default;
 
@@ -922,9 +1127,7 @@ void Installer::back() {
     m.s.can_delete_archive = m.s.archive_deleted = m.s.deleting_archive = false;
     m.s.delete_error.clear();
     m.s.select_title_id.clear();
-    m.s.message = m.s.drives == 0 ? L"No USB drive found. Connect a USB drive to the console, then press Y to look again."
-        : m.s.files.empty()       ? L"No .zip or .vpk files on the USB drive. Copy your archives to it, then press Y to look again."
-                                  : L"";
+    m.s.message = m.scan_message;
     m.s.phase = Phase::Files;
     ++m.s.version;
 }

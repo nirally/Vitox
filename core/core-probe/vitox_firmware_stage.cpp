@@ -59,11 +59,13 @@ std::string upper(std::string s) {
 }
 struct Input {
     const char *file, *sha;
+    const char *alt_sha = nullptr; // 0.0.33.1: a second accepted version
 };
 const Input kInputs[] = {
     { "PSVUPDAT.PUP", "6EF6DC8DA6DB026F28647713E473486D770087A605C52A8D751BFCA7478386CF" }, // system 3.74: os0 + vs0
     { "PREINST.PUP", "339D1439EB329CFBD1A936F0A1563458E0555EF52975486B2844E24B6049E33E" },  // pre-install 3.74: pd0
-    { "FONTPKG.PUP", "F372D306A7F2711125BEA29AA75CBCB1EB19724E9648478FBA07B8D655B37344" },  // font package 3.73: sa0
+    { "FONTPKG.PUP", "F372D306A7F2711125BEA29AA75CBCB1EB19724E9648478FBA07B8D655B37344",  // font package 3.73: sa0
+        "C3C03FC7363DD573D90E5157629BF11551F434B283CC898D9FFC71DD716B791C" },       // 0.0.33.1: Sony's 2022 font package
 };
 } // namespace
 
@@ -115,7 +117,7 @@ extern "C" VitoxFirmwareStageResult vitox_firmware_stage_run(const VitoxCoreHost
     for (const Input &in : kInputs) {
         uintmax_t size = 0;
         const std::string h = upper(sha_file(input / in.file, size));
-        const bool ok = h == in.sha;
+        const bool ok = h == in.sha || (in.alt_sha && h == in.alt_sha);
         r.hashes &= ok;
         out("m8c.1 input {}: {} B SHA-256 {} -> {}", in.file, size, h, ok ? "matches the approved hash" : "MISMATCH");
     }

@@ -28,7 +28,7 @@ struct VitoxLaunchConfig {
     char app[64];      // app= value (folder name or TITLE_ID), empty = auto (single candidate only)
     char app_root[16];    // M9A.2A app_root=homebrew|app-staging: the discovery root under <dev_root> (default homebrew);
                           // vitox-launch.txt and ime_input stay in <dev_root>\homebrew
-    char lle_modules[64]; // M9A.2A lle_modules=<comma list from {libc, libfios2}>: Vita3K MANUAL lle-modules; upstream's
+    char lle_modules[128]; // 0.1.1.8: 64 -> 128 (libsystemgesture). M9A.2A lle_modules=<comma list from {libc, libfios2}>: Vita3K MANUAL lle-modules; upstream's
                           // load_app_impl() preload then loads those found in app0:sce_module after the main module
     char ime_input[64]; // M8F.2A ime_input=<file in the homebrew root>: DIAGNOSTIC scripted IME dialog input, one line per
                         // dialog session, actions split by '|': "enter:<text>" (ime_commit_text + submit_current_ime) or

@@ -29,8 +29,38 @@ namespace vitox {
 void library_load(const std::wstring &local_state);
 bool library_show_homebrew();
 void library_set_show_homebrew(bool on); // saved at once
+// 0.1.1.0 (user request): the USB install folder (vitox-library.txt install_folder=). Empty = the whole drive is searched
+// (every folder, as before); otherwise a path from the drive's root ("\" = the root itself, "\Vita\Games") and only that
+// folder's own files are listed, on every USB drive that has it - the drive letter / name does not matter.
+std::wstring library_install_folder();
+void library_set_install_folder(const std::wstring &folder); // saved at once
 
 namespace install {
+
+// 0.1.1.0: browsing the USB drives' folders to choose the install folder (Settings > Library). All WinRT storage calls run
+// on a worker thread; the UI polls a snapshot.
+struct FolderView {
+    bool loading = true;
+    bool at_drives = true;             // the list holds the USB drives (the top level)
+    std::wstring drive;                // the open drive's display name (at_drives = false)
+    std::wstring path;                 // the open folder from the drive's root: "\" or "\Vita\Games"
+    std::vector<std::wstring> entries; // drives (at_drives) or the open folder's sub-folders, sorted
+    std::wstring message;              // "No USB drive found", an error, ...
+    uint64_t version = 0;
+};
+class FolderBrowser {
+public:
+    FolderBrowser();
+    ~FolderBrowser();
+    void open_root();     // the list of USB drives
+    void enter(size_t i); // open entries[i] (a drive or a sub-folder)
+    void up();            // the parent folder (from a drive's root: the drive list)
+    bool poll(uint64_t have, FolderView &out);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 enum class Kind : int { Game, Homebrew, Update, Dlc };
 const wchar_t *kind_name(Kind k);
@@ -68,6 +98,7 @@ struct Snapshot {
     // Files
     std::vector<ArchiveFile> files;
     unsigned drives = 0;
+    std::wstring folder;  // 0.1.1.0: the install folder the scan used ("" = the whole drive)
     std::wstring message; // scan / analysis / final message (errors included)
     // Confirm / Installing / Done
     std::wstring archive;

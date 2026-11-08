@@ -174,10 +174,16 @@ vitox_substitute(vita3k/kernel/src/load_self.cpp load_self.cpp
         const auto elf_name = std::filesystem::path(reinterpret_cast<const char8_t *>(self_path.c_str())).filename().stem().string();
         const auto filename = vitox_dump_path / fmt::format("{}-{}_{}.elf", log_hex_full(start), log_hex_full(end), elf_name);
         std::ofstream(filename, std::ios::binary).write(reinterpret_cast<const char *>(dump_elf.data()), static_cast<std::streamsize>(dump_elf.size()));]=])
-list(REMOVE_ITEM VITOX_CORE_VITA3K_SOURCES vita3k/kernel/src/load_self.cpp)
+# ---- 0.1.1.10 COMPAT (start-of-game buzzer): upstream fills every new guest thread stack with 0xCC. Games that queue an
+# audio buffer from their stack before writing it (seen: Killzone Mercenary, every other 256-frame buffer = 0xCCCC for the
+# first ~0.3 s) then play a loud -0.4 DC square wave. Zero-filled stacks make such a buffer silent.
+vitox_substitute(vita3k/kernel/src/thread.cpp thread.cpp
+[=[    memset(stack.get_ptr<void>().get(mem), 0xcc, stack_size);]=]
+[=[    memset(stack.get_ptr<void>().get(mem), 0, stack_size); // Vitox 0.1.1.10: upstream 0xcc (audible as a buzz)]=])
+list(REMOVE_ITEM VITOX_CORE_VITA3K_SOURCES vita3k/kernel/src/load_self.cpp vita3k/kernel/src/thread.cpp)
 list(TRANSFORM VITOX_CORE_VITA3K_SOURCES PREPEND "${VITA3K}/" OUTPUT_VARIABLE _vitox_core_abs)
-list(APPEND _vitox_core_abs "${CMAKE_BINARY_DIR}/vitox-patched/load_self.cpp")
-list(APPEND VITOX_CORE_VITA3K_SOURCES "vita3k/kernel/src/load_self.cpp(shimmed:dump->std::filesystem)")
+list(APPEND _vitox_core_abs "${CMAKE_BINARY_DIR}/vitox-patched/load_self.cpp" "${CMAKE_BINARY_DIR}/vitox-patched/thread.cpp")
+list(APPEND VITOX_CORE_VITA3K_SOURCES "vita3k/kernel/src/load_self.cpp(shimmed:dump->std::filesystem)" "vita3k/kernel/src/thread.cpp(shimmed:stack fill 0)")
 string(REPLACE ";" " " _vitox_src_str "${VITOX_CORE_VITA3K_SOURCES}")
 string(REPLACE ";" "; " _vitox_exc_str "${VITOX_CORE_EXCLUDED}")
 file(WRITE "${CMAKE_BINARY_DIR}/vitox-core/vitox_core_sources.h.tmp"
@@ -774,7 +780,7 @@ add_library(vitox_hle STATIC
     # M8B.1 (trap 11): REAL SceAppUtil (sceAppUtilInit is an upstream UNIMPLEMENTED() export: logs once, returns 0)
     "${CMAKE_BINARY_DIR}/vitox-patched/m8b_SceAppUtil.cpp"
     # M8B.1 (trap 13): REAL SceCommonDialog (sceCommonDialogSetConfigParam is an upstream UNIMPLEMENTED() export)
-    "${VITA3K}/vita3k/modules/SceCommonDialog/SceCommonDialog.cpp"
+    "${CMAKE_BINARY_DIR}/vitox-patched/vx_SceCommonDialog.cpp" # 0.1.1.4: patched copy (msg dialog re-init after FINISHED), see vitox_substitute below
     # M8F.2A (approved): REAL frontend-neutral IME helpers (ime_commit_text, submit/dismiss_current_ime, finish/cancel)
     "${VITA3K}/vita3k/ime/src/ime.cpp"
     "${VITA3K}/vita3k/ime/src/active_ime.cpp"
@@ -889,6 +895,21 @@ add_library(vitox_hle STATIC
     # M9A.9 (Catherine Full Body, pre-run import batch CFB-1): upstream stub TUs (UNIMPLEMENTED / STUBBED only, no host
     # sockets): online play (RUDP, adhoc matching, voice QoS, NP WebApi + invitation dialog), game update, libJson
     "${VITA3K}/vita3k/modules/SceRudp/SceLibRudp.cpp"
+    # 0.1.1.0 (BOOT-4: Killzone Mercenary / WipEout 2048 / Sly Cooper / Project DIVA X pre-run import closure): upstream
+    # stub TUs (every export UNIMPLEMENTED upstream: no host access) - coredump handlers, NP party, photo export, shutter
+    # sound, system gesture recognizers, and the libult debug/perf hooks (SceUlobjMgr / SceUlobjDbg / ScePerf)
+    "${VITA3K}/vita3k/modules/SceCoredump/SceCoredump.cpp"
+    "${VITA3K}/vita3k/modules/SceCoredump/SceCoredumpNounlink.cpp"
+    "${VITA3K}/vita3k/modules/SceNpParty/SceNpPartyGameUtil.cpp"
+    "${VITA3K}/vita3k/modules/ScePhotoExport/ScePhotoExport.cpp"
+    "${VITA3K}/vita3k/modules/SceShutterSound/SceShutterSound.cpp"
+    "${VITA3K}/vita3k/modules/SceSystemGesture/SceSystemGesture.cpp"
+    "${VITA3K}/vita3k/modules/SceUlobjMgr/SceUlobjMgr.cpp"
+    "${VITA3K}/vita3k/modules/SceUlobjDbg/SceUlobjDbg.cpp"
+    "${VITA3K}/vita3k/modules/ScePerf/ScePerf.cpp"
+    # 0.1.1.1 (BOOT-4, Project DIVA X): upstream SceCamera module over the inert camera backend (compat/vitox_camera_inert.cpp,
+    # hash-pinned above): every camera open fails NOT_OPEN, no SDL camera, no host device
+    "${VITA3K}/vita3k/modules/SceCamera/SceCamera.cpp"
     "${VITA3K}/vita3k/modules/SceNetAdhocMatching/SceNetAdhocMatching.cpp"
     "${VITA3K}/vita3k/modules/SceVoiceQoS/SceVoiceQoS.cpp"
     "${VITA3K}/vita3k/modules/SceNpWebApi/SceNpWebApi.cpp"
@@ -1674,8 +1695,138 @@ vitox_substitute(vita3k/renderer/src/vulkan/texture.cpp m9a6_vk_texture.cpp
 [=[#include <vkutil/vkutil.h>
 
 extern bool vitox_a2rgb10_fallback; // Vitox M9A.6 compat, defined in m9a6_gxm_to_vulkan.cpp
-]=])
+#include <mutex> // Vitox 0.1.1.10
+#include <unordered_map> // Vitox 0.1.1.10
+]=]
+# ---- 0.1.1.10 COMPAT (Killzone Mercenary campaign abort): textures in formats Dozen cannot sample (R8/R8G8 sRGB,
+# R4G4B4A4, and A1R5G5B5/R5G6B5 if absent) are created as RGBA8 and expanded on upload.
+[=[    if (gxm_texture.gamma_mode)
+        vk_format = linear_to_srgb(vk_format);
+]=]
+[=[    if (gxm_texture.gamma_mode)
+        vk_format = linear_to_srgb(vk_format);
+    {
+        // Vitox 0.1.1.10 compat (Killzone Mercenary campaign): Dozen on the Xbox GPU cannot sample some small formats that
+        // D3D12 has no equivalent for (R8 sRGB, R8G8 sRGB, R4G4B4A4; createImage -> ErrorOutOfDeviceMemory, the render thread
+        // aborted). Such textures are created as RGBA8 (sRGB when the original was) and expanded on upload (upload_texture_impl
+        // below), keeping the same logical channels, so the view swizzle and the shaders are unchanged. Supported formats keep
+        // upstream's path exactly.
+        const vk::Format vitox_orig = vk_format;
+        vk::Format vitox_sub = vk::Format::eUndefined;
+        switch (vk_format) {
+        case vk::Format::eR8Srgb:
+        case vk::Format::eR8G8Srgb:
+            vitox_sub = vk::Format::eR8G8B8A8Srgb;
+            break;
+        case vk::Format::eR4G4B4A4UnormPack16:
+        case vk::Format::eA1R5G5B5UnormPack16:
+        case vk::Format::eR5G6B5UnormPack16:
+            vitox_sub = vk::Format::eR8G8B8A8Unorm; // upstream has no sRGB variant of these either
+            break;
+        default:
+            break;
+        }
+        if (vitox_sub != vk::Format::eUndefined && !vitox_can_sample(state.physical_device, vk_format)) {
+            vk_format = vitox_sub;
+            static uint32_t vitox_logged_mask = 0;
+            const uint32_t bit = 1u << (static_cast<uint32_t>(vitox_orig) & 31);
+            if (!(vitox_logged_mask & bit)) {
+                vitox_logged_mask |= bit;
+                LOG_INFO("Vitox [0.1.1.10] texture format {} not sampleable on this device -> {} (expanded on upload)",
+                    vk::to_string(vitox_orig), vk::to_string(vk_format));
+            }
+        }
+    }
+]=]
+[=[void VKTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height,
+]=]
+[=[// Vitox 0.1.1.10 compat: expand a small-format texel row block to RGBA8 (the image was substituted in configure_texture).
+// Vulkan packings: R4G4B4A4 R=15..12 G=11..8 B=7..4 A=3..0; A1R5G5B5 A=15 R=14..10 G=9..5 B=4..0; R5G6B5 R=15..11 G=10..5 B=4..0.
+// Missing channels read as G=B=0, A=1, as the original single/dual-channel image would.
+static const void *vitox_expand_to_rgba8(SceGxmTextureBaseFormat base_format, const void *pixels, uint32_t count, std::vector<uint8_t> &data) {
+    data.resize(static_cast<size_t>(count) * 4);
+    uint8_t *dst = data.data();
+    const uint8_t *s8 = static_cast<const uint8_t *>(pixels);
+    const uint16_t *s16 = static_cast<const uint16_t *>(pixels);
+    for (uint32_t i = 0; i < count; i++, dst += 4) {
+        switch (base_format) {
+        case SCE_GXM_TEXTURE_BASE_FORMAT_U8:
+            dst[0] = s8[i], dst[1] = 0, dst[2] = 0, dst[3] = 255;
+            break;
+        case SCE_GXM_TEXTURE_BASE_FORMAT_U8U8:
+            dst[0] = s8[2 * i], dst[1] = s8[2 * i + 1], dst[2] = 0, dst[3] = 255;
+            break;
+        case SCE_GXM_TEXTURE_BASE_FORMAT_U4U4U4U4: {
+            const uint16_t v = s16[i];
+            dst[0] = static_cast<uint8_t>(((v >> 12) & 0xF) * 17), dst[1] = static_cast<uint8_t>(((v >> 8) & 0xF) * 17);
+            dst[2] = static_cast<uint8_t>(((v >> 4) & 0xF) * 17), dst[3] = static_cast<uint8_t>((v & 0xF) * 17);
+            break;
+        }
+        case SCE_GXM_TEXTURE_BASE_FORMAT_U1U5U5U5: {
+            const uint16_t v = s16[i];
+            const auto x5 = [](uint32_t c) { return static_cast<uint8_t>((c << 3) | (c >> 2)); };
+            dst[0] = x5((v >> 10) & 31), dst[1] = x5((v >> 5) & 31), dst[2] = x5(v & 31), dst[3] = (v & 0x8000) ? 255 : 0;
+            break;
+        }
+        case SCE_GXM_TEXTURE_BASE_FORMAT_U5U6U5: {
+            const uint16_t v = s16[i];
+            const uint32_t r = (v >> 11) & 31, g = (v >> 5) & 63, b = v & 31;
+            dst[0] = static_cast<uint8_t>((r << 3) | (r >> 2)), dst[1] = static_cast<uint8_t>((g << 2) | (g >> 4));
+            dst[2] = static_cast<uint8_t>((b << 3) | (b >> 2)), dst[3] = 255;
+            break;
+        }
+        default:
+            dst[0] = dst[1] = dst[2] = 0, dst[3] = 255;
+            break;
+        }
+    }
+    return data.data();
+}
+
+void VKTextureCache::upload_texture_impl(SceGxmTextureBaseFormat base_format, uint32_t width, uint32_t height,
+]=]
+[=[        base_format = (base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8) ? SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8 : SCE_GXM_TEXTURE_BASE_FORMAT_S8S8S8S8;
+    }
+]=]
+[=[        base_format = (base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8) ? SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8 : SCE_GXM_TEXTURE_BASE_FORMAT_S8S8S8S8;
+    }
+    // Vitox 0.1.1.10 compat: the image was created as RGBA8 in place of a format the device cannot sample (configure_texture)
+    if ((image.format == vk::Format::eR8G8B8A8Unorm || image.format == vk::Format::eR8G8B8A8Srgb)
+        && (base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U8 || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U8U8
+            || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U4U4U4U4 || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U1U5U5U5
+            || base_format == SCE_GXM_TEXTURE_BASE_FORMAT_U5U6U5)) {
+        text_data = vitox_expand_to_rgba8(base_format, pixels, pixels_per_stride * height, temp_data);
+        base_format = SCE_GXM_TEXTURE_BASE_FORMAT_U8U8U8U8;
+    }
+]=]
+[=[static vk::Format linear_to_srgb(const vk::Format format) {
+]=]
+[=[// Vitox 0.1.1.10 compat: can the device sample this format with optimal tiling? (cached per format)
+static bool vitox_can_sample(vk::PhysicalDevice pd, vk::Format f) {
+    static std::mutex m;
+    static std::unordered_map<int, bool> cache;
+    std::lock_guard<std::mutex> lock(m);
+    const auto it = cache.find(static_cast<int>(f));
+    if (it != cache.end())
+        return it->second;
+    const bool ok = static_cast<bool>(pd.getFormatProperties(f).optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage);
+    cache.emplace(static_cast<int>(f), ok);
+    return ok;
+}
+
+static vk::Format linear_to_srgb(const vk::Format format) {
+]=]
+)
 vitox_substitute(vita3k/renderer/src/vulkan/gxm_to_vulkan.cpp m9a6_gxm_to_vulkan.cpp
+[=[    case SCE_GXM_COLOR_BASE_FORMAT_U4U4U4U4:
+        return vk::Format::eR4G4B4A4UnormPack16;
+]=]
+[=[    case SCE_GXM_COLOR_BASE_FORMAT_U4U4U4U4:
+        // Vitox 0.1.1.3 (Killzone Mercenary): Dozen on the Xbox GPU cannot render to R4G4B4A4 (vkCreateImage with
+        // COLOR_ATTACHMENT -> ErrorOutOfDeviceMemory), so 4444 colour surfaces are stored as RGBA8 (as upstream does for
+        // U8U8U8); their CPU write-back is skipped (format_support_surface_sync, m6c_surface_cache.cpp)
+        return vk::Format::eR8G8B8A8Unorm;
+]=]
 [=[#include <util/log.h>
 ]=]
 [=[#include <util/log.h>
@@ -2147,8 +2298,55 @@ static SwsContext *get_sws_context(]=]
         sws_freeContext(context);
 #endif
         yuv_conversion_cache.sws_context = nullptr;]=])
+# 0.1.1.4 (Sly Cooper: Thieves in Time black screen after its "signed out of PSN" message): the game calls
+# sceMsgDialogInit every frame for its next dialog while the previous one is FINISHED but not terminated (its one early
+# sceMsgDialogTerm came while that dialog was still RUNNING). Upstream answers BUSY forever. A finished, unterminated
+# message dialog is now terminated by the next sceMsgDialogInit (its result is no longer readable after a new Init anyway).
+vitox_substitute(vita3k/modules/SceCommonDialog/SceCommonDialog.cpp vx_SceCommonDialog.cpp
+[=[EXPORT(int, sceMsgDialogInit, const Ptr<SceMsgDialogParam> param) {
+    TRACY_FUNC(sceMsgDialogInit, param);
+    if (emuenv.common_dialog.type != NO_DIALOG)
+        return RET_ERROR(SCE_COMMON_DIALOG_ERROR_BUSY);
+]=]
+[=[EXPORT(int, sceMsgDialogInit, const Ptr<SceMsgDialogParam> param) {
+    TRACY_FUNC(sceMsgDialogInit, param);
+    if (emuenv.common_dialog.type == MESSAGE_DIALOG && emuenv.common_dialog.status == SCE_COMMON_DIALOG_STATUS_FINISHED) {
+        std::lock_guard<std::recursive_mutex> lock(emuenv.common_dialog.mutex);
+        LOG_INFO("Vitox msg dialog: previous message dialog finished (result {}, button {}) but not terminated - terminated by the new sceMsgDialogInit",
+            static_cast<int>(emuenv.common_dialog.result), static_cast<int>(emuenv.common_dialog.msg.status));
+        emuenv.common_dialog.status = SCE_COMMON_DIALOG_STATUS_NONE;
+        emuenv.common_dialog.type = NO_DIALOG;
+    }
+    if (emuenv.common_dialog.type != NO_DIALOG)
+        return RET_ERROR(SCE_COMMON_DIALOG_ERROR_BUSY);
+    if (const SceMsgDialogParam *vp = param.get(emuenv.mem))
+        LOG_INFO("Vitox msg dialog: Init mode {} thread {}", static_cast<int>(vp->mode), thread_id);
+]=])
 vitox_substitute(vita3k/renderer/src/vulkan/surface_cache.cpp m6c_surface_cache.cpp
 "${_m6c_sws_inc}" "${_m6c_sws_inc_new}"
+[=[    return format != SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10;
+}]=]
+[=[    return format != SCE_GXM_COLOR_BASE_FORMAT_U2F10F10F10
+        && format != SCE_GXM_COLOR_BASE_FORMAT_U4U4U4U4; // Vitox 0.1.1.3: stored as RGBA8 (gxm_to_vulkan), no 16-bit write-back
+}]=]
+[=[    image.init_image(surface_usages, vkutil::default_comp_mapping, image_create_flags, image_info_pNext);
+]=]
+[=[    // Vitox 0.1.1.2 (Killzone Mercenary render-thread abort in init_image): a failed colour-surface creation threw out of
+    // the render thread. Log the shape and the Vulkan result, then retry with only the usages a surface needs.
+    try {
+        image.init_image(surface_usages, vkutil::default_comp_mapping, image_create_flags, image_info_pNext);
+    } catch (const std::exception &vitox_e) {
+        static uint32_t vitox_fail_logs = 0;
+        if (vitox_fail_logs++ < 32)
+            LOG_ERROR("Vitox surface: colour image {}x{} (guest {}x{} stride {} x{}) {} usage {} flags {} FAILED: {} | cached colour surfaces {}",
+                width, height, original_width, original_height, color->strideInPixels, state.res_multiplier, vk::to_string(vk_format),
+                vk::to_string(surface_usages), vk::to_string(image_create_flags), vitox_e.what(), color_address_lookup.size());
+        const vk::ImageUsageFlags vitox_min = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
+        image.init_image(vitox_min, vkutil::default_comp_mapping, image_create_flags, image_info_pNext);
+        if (vitox_fail_logs <= 32)
+            LOG_ERROR("Vitox surface: retry with usage {} OK", vk::to_string(vitox_min));
+    }
+]=]
 [=[ColorSurfaceCacheInfo::~ColorSurfaceCacheInfo() {
     sws_freeContext(sws_context);
 }]=]
@@ -2332,7 +2530,22 @@ vitox_substitute(vita3k/renderer/src/transfer.cpp m6c_transfer.cpp
             if (ctx == nullptr) {
                 LOG_ERROR("Failed to get ffmpeg context for format 0x{:0X}", fmt::underlying(src->format));
             } else {
-                sws_scale(ctx, &src_ptr, &src->stride, 0, src->height, &dst_ptr, &dst->stride);
+                // Vitox 0.1.1.11 compat (Killzone Mercenary crash, access violation in ff_sws_slice_worker): swscale's SIMD
+                // paths read (and may write) past the end of the last row, and a guest image can end exactly at an unmapped
+                // page. Scale between padded host copies; only the image rows themselves touch guest memory.
+                const size_t vitox_bpp = gxm::get_bits_per_pixel(src->format) / 8;
+                const size_t vitox_ss = static_cast<size_t>(src->stride), vitox_ds = static_cast<size_t>(dst->stride);
+                const size_t vitox_srow = std::min<size_t>(vitox_ss, static_cast<size_t>(src->width) * vitox_bpp);
+                const size_t vitox_drow = std::min<size_t>(vitox_ds, static_cast<size_t>(dst->width) * vitox_bpp);
+                std::vector<uint8_t> vitox_sbuf(vitox_ss * src->height + 256), vitox_dbuf(vitox_ds * dst->height + 256);
+                for (size_t y = 0; y < src->height; y++)
+                    memcpy(vitox_sbuf.data() + y * vitox_ss, src_ptr + y * vitox_ss, vitox_srow);
+                uint8_t *vitox_sp = vitox_sbuf.data();
+                uint8_t *vitox_dp = vitox_dbuf.data();
+                int vitox_sstride = src->stride, vitox_dstride = dst->stride;
+                sws_scale(ctx, &vitox_sp, &vitox_sstride, 0, src->height, &vitox_dp, &vitox_dstride);
+                for (size_t y = 0; y < dst->height; y++)
+                    memcpy(dst_ptr + y * vitox_ds, vitox_dbuf.data() + y * vitox_ds, vitox_drow);
                 sws_freeContext(ctx);
             }
 #endif

@@ -6,7 +6,7 @@
   IgnorableNamespaces="uap mp">
 
   <!-- Identity is fixed from the first physical-test package onward. Bump only Version. -->
-  <Identity Name="Vitox.M1Probe" Publisher="CN=Vitox" Version="0.0.32.0" ProcessorArchitecture="x64" />
+  <Identity Name="Vitox.M1Probe" Publisher="CN=Vitox" Version="0.2.0.0" ProcessorArchitecture="x64" />
   <mp:PhoneIdentity PhoneProductId="3b7c2e41-6f0a-4d8e-9c51-7a2d0e4b1f01" PhonePublisherId="00000000-0000-0000-0000-000000000000" />
 
   <Properties>
@@ -24,7 +24,7 @@
   </Resources>
 
   <Applications>
-    <Application Id="App" Executable="VitoxM1Probe.exe" EntryPoint="VitoxM1Probe.App">
+    <Application Id="App" Executable="Vitox.exe" EntryPoint="VitoxM1Probe.App">
       <uap:VisualElements
         DisplayName="Vitox"
         Description="Vitox - PlayStation Vita runtime"
@@ -43,6 +43,7 @@
             <uap:SupportedFileTypes>
               <uap:FileType>.zip</uap:FileType>
               <uap:FileType>.vpk</uap:FileType>
+              <uap:FileType>.pup</uap:FileType>
             </uap:SupportedFileTypes>
           </uap:FileTypeAssociation>
         </uap:Extension>

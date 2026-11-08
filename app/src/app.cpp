@@ -523,7 +523,18 @@ private:
             preselect = base.app;
         std::wstring toast = graphics_notice(); // the crash guard reverted the multiplier: say so once at the start
         LauncherHost host;
-        host.version = widen(package_version_);
+        // 0.2.0.0: About shows the release version (0.2, 0.2.1, ...), not the 4-part package version (logs keep that)
+        host.version = [](const std::string &v) {
+            unsigned p[4] = {};
+            if (sscanf_s(v.c_str(), "%u.%u.%u.%u", &p[0], &p[1], &p[2], &p[3]) != 4)
+                return widen(v);
+            std::wstring s = std::to_wstring(p[0]) + L"." + std::to_wstring(p[1]);
+            if (p[2] || p[3])
+                s += L"." + std::to_wstring(p[2]);
+            if (p[3])
+                s += L"." + std::to_wstring(p[3]);
+            return s;
+        }(package_version_);
         host.local_state = local_state_;
         host.closed = [this] { return closed_; };
         host.visible = [this] { return visible_; };

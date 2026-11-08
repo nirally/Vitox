@@ -6,6 +6,8 @@
 #include <xaudio2.h>
 
 #include <atomic>
+#include <cstdio>
+#include <string>
 #include <vector>
 
 #pragma comment(lib, "xaudio2.lib")
@@ -29,6 +31,24 @@ bool check(HRESULT hr, const char *what) {
 
 struct XAudio2OutPort;
 
+// 0.1.1.3 DIAGNOSTIC: first 4 s of each port as WAV
+std::mutex g_dump_mutex;
+std::wstring g_dump_dir;
+unsigned g_dump_next = 0;
+struct PortDump {
+    FILE *f = nullptr;
+    uint32_t bytes = 0, limit = 0;
+    int ch = 0, freq = 0;
+};
+void wav_header(FILE *f, int ch, int freq, uint32_t data) {
+    const uint32_t riff = 36 + data, fmt_len = 16, rate = static_cast<uint32_t>(freq), avg = rate * ch * 2;
+    const uint16_t pcm = 1, chans = static_cast<uint16_t>(ch), align = static_cast<uint16_t>(ch * 2), bits = 16;
+    fseek(f, 0, SEEK_SET);
+    fwrite("RIFF", 1, 4, f); fwrite(&riff, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f); fwrite(&fmt_len, 4, 1, f);
+    fwrite(&pcm, 2, 1, f); fwrite(&chans, 2, 1, f); fwrite(&rate, 4, 1, f); fwrite(&avg, 4, 1, f); fwrite(&align, 2, 1, f);
+    fwrite(&bits, 2, 1, f); fwrite("data", 1, 4, f); fwrite(&data, 4, 1, f);
+}
+
 struct VoiceCallback : public IXAudio2VoiceCallback {
     XAudio2OutPort *port = nullptr;
     void STDMETHODCALLTYPE OnBufferEnd(void *) override;
@@ -47,6 +67,7 @@ struct XAudio2OutPort : public AudioOutPort {
     UINT32 next_slot = 0;
     int samples_per_buffer = 0;
     bool started = false; // M9A.5: underruns are counted only after the first submission
+    PortDump dump; // 0.1.1.3 DIAGNOSTIC
     std::mutex mutex;
     std::condition_variable cond_var;
 
@@ -54,6 +75,8 @@ struct XAudio2OutPort : public AudioOutPort {
         // DestroyVoice waits for in-flight callbacks, so the callback never sees a destroyed port
         if (voice)
             voice->DestroyVoice();
+        if (dump.f)
+            fclose(dump.f);
     }
 
     UINT32 queued() {
@@ -70,6 +93,13 @@ void STDMETHODCALLTYPE VoiceCallback::OnBufferEnd(void *) {
     port->cond_var.notify_one();
 }
 } // namespace
+
+void vitox_xaudio2_dump_begin(const std::wstring &dir) {
+    std::lock_guard<std::mutex> lock(g_dump_mutex);
+    g_dump_dir = dir;
+    g_dump_next = 0;
+    LOG_INFO("Vitox XAudio2: DIAGNOSTIC audio dump dir '{}' ({} chars)", std::string(dir.begin(), dir.end()), dir.size());
+}
 
 VitoxXAudio2Stats vitox_xaudio2_stats() { return { g_ports.load(), g_buffers.load(), g_errors.load(), g_underruns.load() }; }
 
@@ -125,7 +155,24 @@ AudioOutPortPtr VitoxXAudio2Adapter::open_port(int nb_channels, int freq, int nb
     port->slots.resize(static_cast<size_t>(port->len_bytes) * SLOTS);
     check(port->voice->Start(0), "Start");
     ++g_ports;
-    LOG_INFO("Vitox XAudio2: port {} ch {} Hz {} samples/buffer", nb_channels, freq, nb_sample);
+    {
+        std::lock_guard<std::mutex> lock(g_dump_mutex);
+        if (g_dump_dir.empty())
+            LOG_WARN("Vitox XAudio2: DIAGNOSTIC dump skipped (no dump dir)");
+        if (!g_dump_dir.empty() && g_dump_next < 4) {
+            const std::wstring path = g_dump_dir + L"\\audio_dump_" + std::to_wstring(g_dump_next++) + L".wav";
+            port->dump.f = _wfopen(path.c_str(), L"wb");
+            if (!port->dump.f)
+                LOG_ERROR("Vitox XAudio2: DIAGNOSTIC dump open failed errno {} for '{}'", errno, std::string(path.begin(), path.end()));
+            if (port->dump.f) {
+                port->dump.ch = nb_channels;
+                port->dump.freq = freq;
+                port->dump.limit = static_cast<uint32_t>(freq) * nb_channels * 2 * 4;
+                wav_header(port->dump.f, nb_channels, freq, 0);
+            }
+        }
+    }
+    LOG_INFO("Vitox XAudio2: port {} ch {} Hz {} samples/buffer{}", nb_channels, freq, nb_sample, port->dump.f ? " (first 4 s dumped, DIAGNOSTIC)" : "");
     return port;
 }
 
@@ -147,6 +194,15 @@ void VitoxXAudio2Adapter::audio_output(AudioOutPort &out_port, const void *buffe
     uint8_t *slot = port.slots.data() + static_cast<size_t>(port.next_slot) * port.len_bytes;
     port.next_slot = (port.next_slot + 1) % SLOTS;
     memcpy(slot, buffer, port.len_bytes);
+    if (port.dump.f) {
+        fwrite(slot, 1, port.len_bytes, port.dump.f);
+        port.dump.bytes += static_cast<uint32_t>(port.len_bytes);
+        if (port.dump.bytes >= port.dump.limit) {
+            wav_header(port.dump.f, port.dump.ch, port.dump.freq, port.dump.bytes);
+            fclose(port.dump.f);
+            port.dump.f = nullptr;
+        }
+    }
     XAUDIO2_BUFFER b{};
     b.AudioBytes = static_cast<UINT32>(port.len_bytes);
     b.pAudioData = slot;

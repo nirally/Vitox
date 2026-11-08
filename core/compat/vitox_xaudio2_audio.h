@@ -9,6 +9,7 @@
 
 #include <condition_variable>
 #include <mutex>
+#include <string>
 
 struct IXAudio2;
 struct IXAudio2MasteringVoice;
@@ -38,3 +39,6 @@ struct VitoxXAudio2Stats {
     unsigned underruns; // M9A.5: a buffer submitted to a voice that had already drained (audible gap)
 };
 VitoxXAudio2Stats vitox_xaudio2_stats();
+// 0.1.1.3 DIAGNOSTIC (boot buzz): the first 4 s each output port receives in a session are written as
+// <dir>udio_dump_<n>.wav (n = port order in the session, 0..3); call with the LocalState path at session start
+void vitox_xaudio2_dump_begin(const std::wstring &dir);

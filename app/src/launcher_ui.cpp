@@ -11,6 +11,7 @@
 #include "library_install.h" // 0.0.29.0: Settings > Library (show homebrew) + the "+" tile's USB installer
 #include "game_config.h"     // 0.0.30.0: the game menu (Menu on a library card)
 #include "steamgriddb.h"
+#include "firmware_setup.h" // 0.0.33.0: first-run firmware setup
 
 #include <vitox_host_input.h>
 #include <vitox_host_text.h>
@@ -237,6 +238,73 @@ struct LauncherUi::Impl {
     bool inst_open = false;
     int inst_sel = 0;
     float inst_scroll = 0, inst_anim = 0;
+    // ---- 0.0.33.0 first-run firmware setup (a modal shown while the firmware is not installed) ----
+    std::unique_ptr<firmware::Setup> fw;
+    firmware::Snapshot fws;
+    uint64_t fws_ver = 0;
+    bool fw_open = false;
+    float fw_anim = 0;
+    bool fw_busy() const { return fw_open && (fws.phase == firmware::Phase::Scanning || fws.phase == firmware::Phase::Copying || fws.phase == firmware::Phase::Installing); }
+    void fw_buttons(uint32_t edge) {
+        using firmware::Phase;
+        if (fw_busy())
+            return;
+        if (edge & kA) {
+            if (fws.phase == Phase::Done)
+                fw_open = false;
+            else
+                fw->start();
+        } else if (edge & kB) {
+            fw_open = false; // skipped: shown again at the next start
+        }
+    }
+    void fw_update(float dt) {
+        if (!fw_open || !fw)
+            return;
+        fw_anim = std::min(1.0f, fw_anim + dt / 0.25f);
+        if (fw->poll(fws_ver, fws))
+            fws_ver = fws.version;
+    }
+    void draw_fw_modal(float a) {
+        if (!fw_open)
+            return;
+        using firmware::Phase;
+        const float t = ease_out(fw_anim), ma = a * t;
+        brush->SetColor(rgba(0x05010C, 0.80f * ma));
+        dc->FillRectangle(R(0, 0, 1920, 1080), brush.get());
+        const float x0 = 260, x1 = 1660, y0 = 110 + (1 - t) * 30, y1 = 940 + (1 - t) * 30;
+        fill_gradient_round(x0, y0, x1, y1, 34, rgba(0x2A1458, 0.98f * ma), rgba(0x170A30, 0.98f * ma));
+        stroke_round(x0, y0, x1, y1, 34, rgba(0xC9A2FF, 0.5f * ma), 1.5f);
+        text(L"WELCOME TO VITOX", x0 + 48, y0 + 34, 16, DWRITE_FONT_WEIGHT_BOLD, rgba(0xB07CFF, ma), 600, 5);
+        text(L"Install the PS Vita firmware", x0 + 48, y0 + 62, 36, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, ma), 1100);
+        text(L"Vitox needs these three firmware files to run games correctly. Copy the .PUP files to a USB drive, connect it to the "
+             L"console and press A.",
+            x0 + 48, y0 + 120, 21, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xCDB8F5, ma), 1300, 0, true);
+        float ry = y0 + 200;
+        for (int i = 0; i < firmware::kPackages; ++i, ry += 112) {
+            const firmware::PackageInfo &p = firmware::package(i);
+            row_frame(x0 + 40, ry, x1 - 40, ry + 96, false, ma, 20);
+            const bool have = fws.have[i];
+            glyph_badge(x0 + 92, ry + 48, 24, have ? L"✓" : std::to_wstring(i + 1), have ? 0x3E9A4F : 0x6B2FE6, ma);
+            text(p.name, x0 + 140, ry + 16, 26, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, ma), 900);
+            text(p.detail, x0 + 140, ry + 54, 19, DWRITE_FONT_WEIGHT_NORMAL, rgba(0x8F7DB8, ma), 1000);
+            const std::wstring st = have ? L"READY" : L"NEEDED";
+            text(st, x1 - 80 - measure(st, 17, DWRITE_FONT_WEIGHT_BOLD, 3), ry + 36, 17, DWRITE_FONT_WEIGHT_BOLD, rgba(have ? 0x8FE3A0 : 0xF2C46B, ma), 300, 3);
+        }
+        const float my = ry + 30;
+        if (fw_busy()) {
+            spinner(x0 + 80, my + 22, 18, ma);
+            std::wstring m = fws.message;
+            if (fws.phase == Phase::Copying && !fws.current.empty()) {
+                wchar_t pct[32];
+                swprintf_s(pct, L"  %d%%", fws.total_bytes ? static_cast<int>(fws.done_bytes * 100 / fws.total_bytes) : 0);
+                m += L"  " + fws.current + pct;
+            }
+            text(m, x0 + 120, my + 8, 22, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xEADFFF, ma), 1300);
+        } else if (!fws.message.empty()) {
+            text(fws.message, x0 + 48, my + 8, 22, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(fws.phase == Phase::Done ? 0x8FE3A0 : 0xF2C46B, ma), 1300, 0, true);
+        }
+    }
     // ---- 0.0.30.0 the game menu (Menu on a library card): per-game settings + uninstall ----
     bool gm_open = false;
     int gm_row = 0;
@@ -252,6 +320,14 @@ struct LauncherUi::Impl {
     uint64_t gm_freed = 0;
     bool gm_shared = false;
     static constexpr int kGmRows = 6; // resolution, async, pre-warm, overlay, reset, uninstall
+    // ---- 0.1.1.0 Settings > Library: the USB install folder (row 1) and its folder picker ----
+    int lib_row = 0; // 0 = Show Homebrew, 1 = USB Install Folder
+    bool fp_open = false;
+    float fp_anim = 0;
+    std::unique_ptr<install::FolderBrowser> fp;
+    install::FolderView fpv;
+    int fp_sel = 0, fp_scroll = 0;
+    std::wstring fp_return; // after "up": the entry to select again (the folder we came from)
     int shader_row = 0; // 0.0.28.3 Shader Compilation page: 0 = asynchronous compilation, 1 = pre-warm at launch
     int stats_row = 0; // 0.0.28.0 Statistics page: 0 = the toggle, 1 = the display mode
     float gfx_thumb = -1; // animated slider thumb position 0..1 (-1 = snap on first draw)
@@ -404,6 +480,8 @@ struct LauncherUi::Impl {
         art_end();
         inst.reset(); // (an open installer blocks launching; this only matters when the window closes)
         inst_open = false;
+        fp.reset();
+        fp_open = false;
         for (auto &a : apps)
             a.icon = a.hero = nullptr, a.icon_tried = a.hero_tried = a.icon_done = a.hero_done = false;
         layouts.clear();
@@ -821,12 +899,18 @@ struct LauncherUi::Impl {
 
     // ================================================================ input
     void move(int dx, int dy) {
+        if (fw_open)
+            return;
         if (inst_open) {
             install_move(dy);
             return;
         }
         if (gm_open) {
             gm_move(dx, dy);
+            return;
+        }
+        if (fp_open) {
+            fp_move(dy);
             return;
         }
         if (zone == Zone::Tabs) {
@@ -882,7 +966,9 @@ struct LauncherUi::Impl {
                 shaders_set(shader_row, dx > 0); // right = ON, left = OFF
             break;
         case Page::Library:
-            if (dx)
+            if (dy)
+                lib_row = std::clamp(lib_row + dy, 0, 1);
+            else if (dx && lib_row == 0)
                 library_set(dx > 0); // right = ON, left = OFF
             break;
         case Page::Stats:
@@ -982,12 +1068,20 @@ struct LauncherUi::Impl {
             move(0, -1);
         if (fire & kDDown)
             move(0, 1);
+        if (fw_open) {
+            fw_buttons(edge);
+            return false;
+        }
         if (inst_open) {
             install_buttons(edge);
             return false;
         }
         if (gm_open) {
             gm_buttons(edge);
+            return false;
+        }
+        if (fp_open) {
+            fp_buttons(edge);
             return false;
         }
         // 0.0.30.0: Menu on a library card opens that game's menu (its own settings + uninstall)
@@ -1032,7 +1126,10 @@ struct LauncherUi::Impl {
             }
         }
         if (edge & kX) {
-            if (zone == Zone::Content && page == Page::Browser && tab == Tab::Settings)
+            if (zone == Zone::Content && page == Page::Library && tab == Tab::Settings && lib_row == 1 && !library_install_folder().empty()) {
+                library_set_install_folder(std::wstring());
+                show_toast(L"USB install folder cleared: the whole USB drive is searched again");
+            } else if (zone == Zone::Content && page == Page::Browser && tab == Tab::Settings)
                 start_edit(EditTarget::Search, br.term);
             else if (zone == Zone::Content && page == Page::Artwork && tab == Tab::Settings && art_sel == 0)
                 start_edit(EditTarget::Key, sgdb_key);
@@ -1069,7 +1166,10 @@ struct LauncherUi::Impl {
                     else if (menu_sel == kMenuLibrary)
                         open_page(Page::Library);
                 } else if (page == Page::Library) {
-                    library_set(!library_show_homebrew());
+                    if (lib_row == 0)
+                        library_set(!library_show_homebrew());
+                    else
+                        fp_open_picker();
                 } else if (page == Page::Shaders) {
                     shaders_set(shader_row, !(shader_row == 0 ? graphics_async_pipelines() : graphics_pipeline_prewarm()));
                 } else if (page == Page::Stats) {
@@ -1117,6 +1217,69 @@ struct LauncherUi::Impl {
         library_set_show_homebrew(show);
         apply_library(false, std::string());
         log_line(Log::Lifecycle, "launcher ui: show homebrew %s, saved (%u shown, %u hidden)", show ? "ON" : "OFF", shown_homebrew, hidden_homebrew);
+    }
+
+    // ---- 0.1.1.0 the USB install folder picker (Settings > Library, row 1) ----
+    void fp_open_picker() {
+        if (!fp)
+            fp = std::make_unique<install::FolderBrowser>();
+        fpv = install::FolderView{};
+        fp_sel = fp_scroll = 0;
+        fp_return.clear();
+        fp_anim = 0;
+        fp_open = true;
+        armed = false; // the A that opened it must be released first
+        fp->open_root();
+        log_line(Log::Lifecycle, "launcher ui: install folder picker opened");
+    }
+    void fp_close() {
+        fp_open = false;
+        armed = false;
+        log_line(Log::Lifecycle, "launcher ui: install folder picker closed");
+    }
+    void fp_move(int dy) {
+        if (!fpv.loading && dy && !fpv.entries.empty())
+            fp_sel = std::clamp(fp_sel + dy, 0, static_cast<int>(fpv.entries.size()) - 1);
+    }
+    void fp_buttons(uint32_t edge) {
+        if (fpv.loading) {
+            if (edge & kB)
+                fp_close(); // (the worker finishes on its own; the next open waits for it)
+            return;
+        }
+        if ((edge & kA) && fp_sel < static_cast<int>(fpv.entries.size())) {
+            fp_return.clear();
+            fp->enter(static_cast<size_t>(fp_sel));
+        } else if ((edge & kX) && !fpv.at_drives) {
+            library_set_install_folder(fpv.path);
+            show_toast(L"USB install folder set to " + fpv.path + L" (on any USB drive)");
+            fp_close();
+        } else if (edge & kY) {
+            fp_return.clear();
+            fp->open_root();
+        } else if (edge & kB) {
+            if (fpv.at_drives) {
+                fp_close();
+            } else {
+                // select the folder (or drive) we leave once its parent is listed
+                const size_t cut = fpv.path.find_last_of(L'\\');
+                fp_return = fpv.path == L"\\" ? fpv.drive : fpv.path.substr(cut + 1);
+                fp->up();
+            }
+        }
+    }
+    void fp_update(float dt) {
+        if (!fp_open || !fp)
+            return;
+        fp_anim = std::min(1.0f, fp_anim + dt / 0.25f);
+        if (fp->poll(fpv.version, fpv)) {
+            fp_sel = 0;
+            if (!fp_return.empty())
+                for (size_t i = 0; i < fpv.entries.size(); ++i)
+                    if (fpv.entries[i] == fp_return)
+                        fp_sel = static_cast<int>(i);
+            fp_scroll = 0;
+        }
     }
 
     // ---- the USB installer (0.0.29.0, the "+" tile) ----
@@ -2321,7 +2484,7 @@ struct LauncherUi::Impl {
                 sa && sp ? L"Async · Pre-warm" : sa ? L"Async" : sp ? L"Pre-warm" : L"OFF", L"◈" },
             { L"Performance Statistics Overlay", L"FPS, memory and CPU over the running game", stats_enabled() ? (stats_mode() == StatsMode::Full ? L"ON · Full" : L"ON · FPS") : L"OFF",
                 L"≡" },
-            { L"Library", L"Show or hide homebrew apps; install games and DLC from USB", library_show_homebrew() ? L"Homebrew shown" : L"Homebrew hidden", L"▤" },
+            { L"Library", L"Show or hide homebrew apps; choose the USB install folder", library_show_homebrew() ? L"Homebrew shown" : L"Homebrew hidden", L"▤" },
             { L"Artwork", L"Custom card and background art from SteamGridDB", sgdb_key.empty() ? L"No API key" : L"SteamGridDB", L"▣" },
             { L"About", L"The installed Vitox package (Package.Current)", version, L"i" },
         };
@@ -2782,7 +2945,7 @@ struct LauncherUi::Impl {
         const unsigned hb = shown_homebrew + hidden_homebrew;
         {
             const float x0 = kLeft, x1 = 1770, y0 = 318, y1 = 430;
-            row_frame(x0, y0, x1, y1, zone == Zone::Content, a, 26);
+            row_frame(x0, y0, x1, y1, zone == Zone::Content && lib_row == 0, a, 26);
             text(L"Show Homebrew Applications", x0 + 40, y0 + 22, 29, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, a), 1100);
             wchar_t desc[160];
             if (on)
@@ -2794,8 +2957,24 @@ struct LauncherUi::Impl {
             draw_switch(sx, sy, on, a, sw, sh);
             text(on ? L"ON" : L"OFF", sx + sw + 22, sy + 9, 26, DWRITE_FONT_WEIGHT_BOLD, rgba(on ? 0xFFFFFF : 0x8F7DB8, a));
         }
-        text(L"INSTALLING GAMES AND DLC", kLeft, 482, 15, DWRITE_FONT_WEIGHT_BOLD, rgba(0x8F7DB8, a), 600, 4);
-        draw_plus_tile(kLeft, 522, 150, a, false);
+        {
+            // 0.1.1.0: the USB install folder
+            const std::wstring folder = library_install_folder();
+            const float x0 = kLeft, x1 = 1770, y0 = 446, y1 = 558;
+            row_frame(x0, y0, x1, y1, zone == Zone::Content && lib_row == 1, a, 26);
+            text(L"USB Install Folder", x0 + 40, y0 + 22, 29, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, a), 1000);
+            text(folder.empty() ? L"The installer searches every folder of the USB drive for .zip and .vpk archives"
+                                : L"The installer lists only the archives in this folder (on any USB drive), not its sub-folders",
+                x0 + 40, y0 + 66, 19, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB9A6E0, a), 1000);
+            const std::wstring v = folder.empty() ? L"Whole drive" : folder;
+            const wchar_t *vf = folder.empty() ? L"Segoe UI" : L"Consolas";
+            const float vw = std::min(560.0f, measure(v, 24, DWRITE_FONT_WEIGHT_BOLD, 0, vf) + 40);
+            const float vx = x1 - 50 - vw, vy = (y0 + y1) / 2 - 24;
+            fill_round(vx, vy, vx + vw, vy + 48, 24, rgba(folder.empty() ? 0x3A1B70 : 0x8A4DFF, (folder.empty() ? 0.45f : 0.30f) * a));
+            text(v, vx + 20, vy + 9, 24, DWRITE_FONT_WEIGHT_BOLD, rgba(folder.empty() ? 0xC9B8EE : 0xFFFFFF, a), vw - 40, 0, false, vf);
+        }
+        text(L"INSTALLING GAMES AND DLC", kLeft, 604, 15, DWRITE_FONT_WEIGHT_BOLD, rgba(0x8F7DB8, a), 600, 4);
+        draw_plus_tile(kLeft, 644, 150, a, false);
         const wchar_t *lines[4] = {
             L"Select the + tile at the end of the library, then choose a .zip or .vpk archive on a USB drive.",
             L"Games and homebrew appear in the library; updates merge into their game; DLC goes to the game's add-on content.",
@@ -2803,9 +2982,62 @@ struct LauncherUi::Impl {
             L"Decrypted dumps install as they are; NoNpDrm dumps are decrypted with their license (work.bin) while installing.",
         };
         for (int i = 0; i < 4; ++i) {
-            const float ly = 536.0f + i * 56.0f;
+            const float ly = 652.0f + i * 50.0f;
             glyph_badge(kLeft + 196, ly + 14, 14, i == 3 ? L"!" : L"i", 0x6A35E8, a, 16);
             text(lines[i], kLeft + 226, ly, 20, DWRITE_FONT_WEIGHT_NORMAL, rgba(i == 3 ? 0xEADFFF : 0xB9A6E0, a), 1400);
+        }
+    }
+
+    // ---------------------------------------------------------------- 0.1.1.0 the USB install folder picker
+    void draw_folder_picker(float a) {
+        if (!fp_open)
+            return;
+        const float t = ease_out(fp_anim), ma = a * t;
+        brush->SetColor(rgba(0x05010C, 0.72f * ma));
+        dc->FillRectangle(R(0, 0, 1920, 1080), brush.get());
+        const float x0 = 360, x1 = 1560, y0 = 104 + (1 - t) * 30, y1 = 952 + (1 - t) * 30;
+        fill_gradient_round(x0, y0, x1, y1, 34, rgba(0x2A1458, 0.98f * ma), rgba(0x170A30, 0.98f * ma));
+        stroke_round(x0, y0, x1, y1, 34, rgba(0xC9A2FF, 0.5f * ma), 1.5f);
+        const float lx0 = x0 + 44, lx1 = x1 - 44;
+        text(L"USB INSTALL FOLDER", lx0, y0 + 44, 15, DWRITE_FONT_WEIGHT_BOLD, rgba(0xB07CFF, ma), 600, 5);
+        text(fpv.at_drives ? L"Choose a USB drive" : L"Choose a folder", lx0, y0 + 70, 36, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, ma), lx1 - lx0);
+        // where we are
+        const std::wstring where = fpv.at_drives ? L"USB drives" : fpv.drive + L"   " + fpv.path;
+        fill_round(lx0, y0 + 130, lx1, y0 + 178, 20, rgba(0x1A0C33, 0.75f * ma));
+        text(where, lx0 + 22, y0 + 140, 22, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xEADFFF, ma), lx1 - lx0 - 44, 0, false, L"Consolas");
+        const float ly = y0 + 204, rh = 64, gap = 10;
+        constexpr int kRowsShown = 7;
+        const std::wstring cur = library_install_folder();
+        text(L"Now: " + (cur.empty() ? std::wstring(L"the whole USB drive is searched") : cur + L"  (only this folder's archives are listed)"), lx0 + 4,
+            y1 - 70, 19, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xB9A6E0, ma), lx1 - lx0 - 8);
+        if (fpv.loading) {
+            spinner(960, ly + 200, 26, ma);
+            return;
+        }
+        if (fpv.entries.empty()) {
+            const std::wstring m = !fpv.message.empty() ? fpv.message
+                : fpv.at_drives                    ? L"No USB drive found."
+                                                   : L"No sub-folders here. Press X to use this folder.";
+            text(m, lx0 + 4, ly + 20, 22, DWRITE_FONT_WEIGHT_NORMAL, rgba(0xF2C46B, ma), lx1 - lx0 - 8, 0, true);
+            return;
+        }
+        if (fp_sel < fp_scroll)
+            fp_scroll = fp_sel;
+        if (fp_sel >= fp_scroll + kRowsShown)
+            fp_scroll = fp_sel - kRowsShown + 1;
+        for (int r = 0; r < kRowsShown; ++r) {
+            const int i = fp_scroll + r;
+            if (i >= static_cast<int>(fpv.entries.size()))
+                break;
+            const float ry = ly + r * (rh + gap);
+            row_frame(lx0, ry, lx1, ry + rh, i == fp_sel, ma, 20);
+            glyph_badge(lx0 + 40, ry + rh / 2, 16, fpv.at_drives ? L"\u25A3" : L"\u25B8", fpv.at_drives ? 0x2F6FD0 : 0x6A35E8, ma, 16);
+            text(fpv.entries[static_cast<size_t>(i)], lx0 + 74, ry + 16, 24, DWRITE_FONT_WEIGHT_SEMI_BOLD, rgba(0xFFFFFF, ma), lx1 - lx0 - 120);
+        }
+        if (fpv.entries.size() > kRowsShown) {
+            wchar_t buf[64];
+            swprintf_s(buf, L"%d / %u", fp_sel + 1, static_cast<unsigned>(fpv.entries.size()));
+            text(buf, lx1 - measure(buf, 18, DWRITE_FONT_WEIGHT_NORMAL), ly + kRowsShown * (rh + gap) + 4, 18, DWRITE_FONT_WEIGHT_NORMAL, rgba(0x8F7DB8, ma), 200);
         }
     }
 
@@ -3633,6 +3865,13 @@ struct LauncherUi::Impl {
         std::wstring right;
         if (editing != EditTarget::None) {
             right = L"Enter saves  ·  the keyboard's close button keeps what you typed";
+        } else if (fw_open) {
+            if (!fw_busy()) {
+                x += button_hint(x, y, L"A", fws.phase == firmware::Phase::Done ? L"Continue" : L"Install from USB", 0x3E9A4F, a);
+                if (fws.phase != firmware::Phase::Done)
+                    x += button_hint(x, y, L"B", L"Skip for now", 0xB23A48, a);
+            }
+            right = L"Files are recognised by their contents, any name or folder on the drive";
         } else if (inst_open) {
             using install::Phase;
             switch (is.phase) {
@@ -3662,7 +3901,18 @@ struct LauncherUi::Impl {
                     x += button_hint(x, y, L"B", L"Close", 0xB23A48, a);
                 break;
             }
-            right = L"Decrypted dumps, and NoNpDrm dumps with their license (work.bin)";
+            right = !is.folder.empty() && is.phase == Phase::Files ? L"Install folder: " + is.folder + L"  (Settings \u203A Library)"
+                                                                   : L"Decrypted dumps, and NoNpDrm dumps with their license (work.bin)";
+        } else if (fp_open) {
+            if (!fpv.loading) {
+                if (!fpv.entries.empty())
+                    x += button_hint(x, y, L"\u25B2\u25BC", L"Select", 0x4B2E8F, a), x += button_hint(x, y, L"A", L"Open", 0x3E9A4F, a);
+                if (!fpv.at_drives)
+                    x += button_hint(x, y, L"X", L"Use this folder", 0x2F6FD0, a);
+                x += button_hint(x, y, L"Y", L"Drives", 0xC08A1E, a);
+            }
+            x += button_hint(x, y, L"B", fpv.at_drives || fpv.loading ? L"Close" : L"Up", 0xB23A48, a);
+            right = L"The same folder is used on any USB drive";
         } else if (gm_open) {
             if (gm_state != 0) {
                 right = L"Removing files…";
@@ -3705,10 +3955,17 @@ struct LauncherUi::Impl {
             x += button_hint(x, y, L"B", L"Back", 0xB23A48, a);
             right = L"Applies the next time a game starts";
         } else if (page == Page::Library) {
-            x += button_hint(x, y, L"\u25C0\u25B6", L"Change", 0x4B2E8F, a);
-            x += button_hint(x, y, L"A", L"Toggle", 0x3E9A4F, a);
+            x += button_hint(x, y, L"\u25B2\u25BC", L"Select", 0x4B2E8F, a);
+            if (lib_row == 0) {
+                x += button_hint(x, y, L"\u25C0\u25B6", L"Change", 0x4B2E8F, a);
+                x += button_hint(x, y, L"A", L"Toggle", 0x3E9A4F, a);
+            } else {
+                x += button_hint(x, y, L"A", L"Choose folder", 0x3E9A4F, a);
+                if (!library_install_folder().empty())
+                    x += button_hint(x, y, L"X", L"Whole drive", 0x2F6FD0, a);
+            }
             x += button_hint(x, y, L"B", L"Back", 0xB23A48, a);
-            right = L"The library updates at once";
+            right = lib_row == 0 ? L"The library updates at once" : L"Used the next time you open the + tile";
         } else if (page == Page::Graphics) {
             x += button_hint(x, y, L"\u25C0\u25B6", L"Adjust", 0x4B2E8F, a);
             x += button_hint(x, y, L"A", L"Confirm", 0x3E9A4F, a);
@@ -3795,6 +4052,8 @@ struct LauncherUi::Impl {
         }
         install_update(dt);
         gm_update(dt);
+        fp_update(dt);
+        fw_update(dt);
 
         float glow_rect[4] = { 0, 0, 0, 0 };
         // Direct2D first records into the layer below; the background is drawn by D3D11 into the back buffer first, so the
@@ -3816,6 +4075,8 @@ struct LauncherUi::Impl {
         draw_footer(a * (launching ? 1 - ease_out(launch_t * 2) : 1));
         draw_install_modal(a);
         draw_game_menu(a);
+        draw_folder_picker(a);
+        draw_fw_modal(a);
         draw_toast(a);
         draw_edit_modal(a);
         if (launching) {
@@ -3891,6 +4152,12 @@ LauncherChoice LauncherUi::run(CoreWindow const &window, const LauncherHost &hos
     m.scanned_once = false;
     if (!toast.empty())
         m.show_toast(toast);
+    if (!m.fw && !vitox::firmware::installed(kDevRoot)) {
+        m.fw = std::make_unique<vitox::firmware::Setup>(kDevRoot);
+        m.fw_open = true;
+        m.fw_anim = 0;
+        m.fw->poll(0, m.fws);
+    }
     m.start_scan();
     m.next_scan = Clock::now() + std::chrono::seconds(4);
     m.last = Clock::now();

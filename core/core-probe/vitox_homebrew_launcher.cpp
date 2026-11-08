@@ -396,6 +396,21 @@ overlay::button_states poll_overlay_input(EmuEnvState &emuenv) {
         }
     }
 
+    // 0.1.1.4: no Vita3K controller registered (no physical pad yet, e.g. a scripted DIAGNOSTIC run): the overlay also
+    // reads Vitox pad slot 0 (which carries ui-script presses), so common dialogs can be answered
+    if (emuenv.ctrl.controllers.empty()) {
+        VitoxPadReading r{};
+        const VitoxHostInput *hi = g_stick_real ? g_stick_real : vitox_host_input(); // g_stick_real: only with auto_stick
+        if (hi && hi->read(0, &r)) {
+            static const std::pair<uint32_t, uint32_t> k_map[] = { { 1u << 0, SCE_CTRL_CROSS }, { 1u << 1, SCE_CTRL_CIRCLE },
+                { 1u << 2, SCE_CTRL_SQUARE }, { 1u << 3, SCE_CTRL_TRIANGLE }, { 1u << 4, SCE_CTRL_SELECT }, { 1u << 6, SCE_CTRL_START },
+                { 1u << 9, SCE_CTRL_L1 }, { 1u << 10, SCE_CTRL_R1 }, { 1u << 11, SCE_CTRL_UP }, { 1u << 12, SCE_CTRL_DOWN },
+                { 1u << 13, SCE_CTRL_LEFT }, { 1u << 14, SCE_CTRL_RIGHT } };
+            for (const auto &[bit, sce] : k_map)
+                if (r.buttons & bit)
+                    buttons |= sce;
+        }
+    }
     auto set = [&](uint32_t mask, overlay::pad_button btn) {
         if (buttons & mask)
             states[static_cast<size_t>(btn)] = true;
@@ -563,8 +578,11 @@ static bool vitox_apply_config_line(VitoxLaunchConfig &cfg, const std::string &k
                          // M9A.7 (next title user-approved 2026-10-28): libface + libsmart - app-bundled plain SELFs that upstream
                          // auto-LLEs (auto_lle_modules: SCE_SYSMODULE_FACE / SCE_SYSMODULE_SMART); load_sys_module loads them
                          // from app0:sce_module
+                         // 0.1.1.8: libsystemgesture - the staged firmware gesture library (vs0:sys/external), which upstream
+                         // auto-LLEs (SCE_SYSMODULE_SYSTEM_GESTURE); its HLE SceSystemGesture is all UNIMPLEMENTED, so touch
+                         // recognizers never report a TAP (menus that need a tap see the finger down but never select)
                          if (m != "libc" && m != "libfios2" && m != "libult" && m != "libpvf" && m != "libSceFt2" && m != "libscemp4" &&
-                             m != "libface" && m != "libsmart")
+                             m != "libface" && m != "libsmart" && m != "libsystemgesture")
                              return false;
                          if (e == std::string::npos)
                              break;
@@ -678,7 +696,7 @@ extern "C" VitoxLaunchConfig vitox_launcher_config_for(const wchar_t *dev_root, 
             if (sfs::is_regular_file(sfs::path(app->dir) / "sce_module" / (std::string(m) + ".suprx"), ec))
                 lle += (lle.empty() ? "" : ",") + std::string(m);
         if ((cfg.staged_pgf || staging_ready) && !lle.empty())
-            lle += ",libSceFt2,libpvf,libscemp4";
+            lle += ",libSceFt2,libpvf,libscemp4,libsystemgesture";
         strncpy_s(cfg.lle_modules, lle.c_str(), _TRUNCATE);
     }
     // (1) the firmware modules (libSceFt2 / libpvf / libscemp4) exist only in the staged firmware's vs0: a title that
@@ -686,7 +704,7 @@ extern "C" VitoxLaunchConfig vitox_launcher_config_for(const wchar_t *dev_root, 
     // game never started unless its profile also said firmware=staging-pgf)
     const std::string lle_list = std::string(",") + cfg.lle_modules + ",";
     const bool needs_vs0 = lle_list.find(",libSceFt2,") != std::string::npos || lle_list.find(",libpvf,") != std::string::npos
-        || lle_list.find(",libscemp4,") != std::string::npos;
+        || lle_list.find(",libscemp4,") != std::string::npos || lle_list.find(",libsystemgesture,") != std::string::npos;
     if (needs_vs0 && !cfg.staged_pgf) {
         if (staging_ready)
             cfg.staged_pgf = true;
@@ -962,6 +980,12 @@ extern "C" VitoxLaunchResult vitox_homebrew_launch_run(const VitoxCoreHost *host
     emuenv->config_path = ls;
     emuenv->log_path = ls / "log";
     emuenv->cache_path = ls / "cache";
+    vitox_xaudio2_dump_begin(ls.wstring()); // 0.1.1.3 DIAGNOSTIC: boot buzz
+    {
+        // 0.1.1.4: the 40-lines-per-NID import log budget is per game session (a previous game used it up before)
+        std::lock_guard<std::mutex> lock(g_import_note_m);
+        g_import_notes.clear();
+    }
     emuenv->vita_fs_path = vita_fs;
     emuenv->static_assets_path = fs::path(static_assets);
     std::atomic<bool> exited{ false };
@@ -1762,7 +1786,7 @@ extern "C" VitoxLaunchResult vitox_homebrew_launch_run(const VitoxCoreHost *host
                     }
                     std::sort(calls.begin(), calls.end(), std::greater<>());
                     std::string top;
-                    for (size_t i = 0; i < calls.size() && i < 40; ++i)
+                    for (size_t i = 0; i < calls.size() && i < 80; ++i) // 0.1.1.2: 80 (was 40)
                         top += fmt::format("{}{} {}", i ? ", " : "", import_name(calls[i].second), calls[i].first);
                     out("m9a6 imports (30 s): {} distinct | {}", calls.size(), top);
                 }

@@ -7,7 +7,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{3B7C2E41-6F0A-4D8E-9C51-7A2D0E4B1F01}</ProjectGuid>
     <RootNamespace>VitoxM1Probe</RootNamespace>
-    <ProjectName>VitoxM1Probe</ProjectName>
+    <ProjectName>Vitox</ProjectName><!-- 0.1.1.12: file names without M1Probe (package identity unchanged: Vitox.M1Probe) -->
     <DefaultLanguage>en-US</DefaultLanguage>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
     <AppContainerApplication>true</AppContainerApplication>
@@ -33,7 +33,7 @@
   <PropertyGroup>
     <OutDir>$(MSBuildThisFileDirectory)out\bin\$(Configuration)\</OutDir>
     <IntDir>$(MSBuildThisFileDirectory)out\obj\$(Configuration)\</IntDir>
-    <TargetName>VitoxM1Probe</TargetName>
+    <TargetName>Vitox</TargetName>
     <!-- Packaging: sideload-only, x64, no bundle. Identity lives in Package.appxmanifest. -->
     <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
     <UapAppxPackageBuildMode>SideloadOnly</UapAppxPackageBuildMode>
@@ -109,6 +109,7 @@
     <ClCompile Include="src\graphics_config.cpp" />
     <ClCompile Include="src\perf_stats.cpp" />
     <ClCompile Include="src\library_install.cpp" />
+    <ClCompile Include="src\firmware_setup.cpp" />
     <ClCompile Include="src\game_config.cpp" />
   </ItemGroup>
   <ItemGroup>

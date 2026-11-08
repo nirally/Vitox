@@ -1,4 +1,4 @@
-﻿#requires -Version 7.2
+#requires -Version 7.2
 <#
 .SYNOPSIS
   Vitox-only Xbox Developer Mode build/deploy/test/log harness (Device Portal REST).
@@ -93,7 +93,7 @@ param(
 
 Set-StrictMode -Version 1.0  # console JSON has optional fields; v2+ throws on absent properties
 $ErrorActionPreference = 'Stop'
-$script:HarnessVersion = '0.1.33'
+$script:HarnessVersion = '0.1.34' # 0.1.34: process match accepts Vitox.exe (0.1.1.12 file rename) and VitoxM1Probe.exe
 $script:DryRun = [bool]$DryRun
 $script:StateDir = Join-Path (Split-Path -Parent ([IO.Path]::GetFullPath($Config))) 'state'
 $script:RunDir = $null
@@ -741,7 +741,7 @@ function Invoke-Status {
     $pr = Invoke-Wdp -Method GET -Path '/api/resourcemanager/processes' -AllowFailure
     $out.processes_endpoint = $pr.Status
     if ($pr.Json) {
-        $out.vitox_process = @(@($pr.Json.Processes) | Where-Object { $_.ImageName -match 'VitoxM1Probe' })
+        $out.vitox_process = @(@($pr.Json.Processes) | Where-Object { [string]$_.ImageName -imatch '^Vitox(M1Probe)?(\.exe)?$' })
     }
     $f = Join-Path $script:StateDir 'last-status.json'
     Write-Json $out $f
@@ -799,7 +799,7 @@ function Get-InstalledVitox($Cfg) {
 # stops any running instance by default. Only the Vitox image counts as "running"; the stop targets only installed
 # Vitox package full names (never another package or process). -KeepRunningDiagnostic keeps it (controlled repro).
 function Get-RunningVitoxPlan($ProcessesJson, $InstalledVitox, $Cfg, [bool]$Keep) {
-    $procs = @(@($ProcessesJson.Processes) | Where-Object { [string]$_.ImageName -imatch '^VitoxM1Probe(\.exe)?$' })
+    $procs = @(@($ProcessesJson.Processes) | Where-Object { [string]$_.ImageName -imatch '^Vitox(M1Probe)?(\.exe)?$' })
     $targets = @(@($InstalledVitox) | Where-Object { $_.Name -ceq $Cfg.Expected.Name -and $_.Publisher -ceq $Cfg.Expected.Publisher } |
             ForEach-Object { [string]$_.PackageFullName })
     $action = if (-not $procs.Count) { 'none' } elseif ($Keep) { 'keep' } else { 'stop' }
@@ -1076,7 +1076,7 @@ function Invoke-Launch {
             $pr = Invoke-Wdp -Method GET -Path '/api/resourcemanager/processes' -AllowFailure
             $p.processes_http = $pr.Status
             if ($pr.Json) {
-                $vp = @($pr.Json.Processes) | Where-Object { $_.ImageName -match 'VitoxM1Probe' } | Select-Object -First 1
+                $vp = @($pr.Json.Processes) | Where-Object { [string]$_.ImageName -imatch '^Vitox(M1Probe)?(\.exe)?$' } | Select-Object -First 1
                 $p.process_seen = [bool]$vp
                 # 0.1.25 (M9A.6 diagnostic, read-only): the process record itself, to tell a busy, idle or suspended process apart
                 if ($vp) { $p.proc = [ordered]@{ cpu = $vp.CPUUsage; private = $vp.PrivateWorkingSet; ws = $vp.WorkingSetSize; commit = $vp.TotalCommit; pagefile = $vp.PageFileUsage; running = $vp.IsRunning } }

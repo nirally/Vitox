@@ -331,6 +331,13 @@ void touch_cursor(VitoxTouchCursor *out) {
 
 bool read(unsigned slot, VitoxPadReading *out) {
     std::lock_guard<std::mutex> lock(g_m);
+    // 0.1.1.6 DIAGNOSTIC: with no physical pad, slot 0 still reports ui-script presses (scripted test runs only; the
+    // launcher's overlay fallback reads it to answer common dialogs, Vita3K registers no controller for it)
+    if (slot == 0 && !g_pads[0] && !g_script.empty()) {
+        *out = VitoxPadReading{};
+        add_script_axes(*out);
+        return true;
+    }
     if (slot >= VITOX_HOST_PADS || !g_pads[slot])
         return false;
     refresh(slot);
