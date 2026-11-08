@@ -6,10 +6,10 @@
 [Vita3K](https://github.com/Vita3K/Vita3K) emulator core as a UWP app with a console-friendly library
 launcher, so commercial Vita games and homebrew can be installed from a USB drive and played on an Xbox.
 
-> **Alpha (version 0.1).** Vitox is in alpha and will keep getting updates. Not every game runs correctly yet, so
+> **Alpha (version 0.2).** Vitox is in alpha and will keep getting updates. Not every game runs correctly yet, so
 > expect bugs and games that do not start. If you find a bug, please report it in
 > [Issues](https://github.com/nirally/Vitox/issues) (game name, title ID and what happened) so it can be fixed.
-> Download the latest build (`vitox-alpha.zip`) from [Releases](https://github.com/nirally/Vitox/releases).
+> Download the latest build (`vitox-0.2.zip`) from [Releases](https://github.com/nirally/Vitox/releases).
 
 ---
 
@@ -73,7 +73,7 @@ it to the table.
 
 These steps assume your Xbox Series X|S is already in **Developer Mode**.
 
-1. Download `vitox-alpha.zip` from [Releases](https://github.com/nirally/Vitox/releases) on your PC and extract it. It
+1. Download `vitox-0.2.zip` (or the newest release) from [Releases](https://github.com/nirally/Vitox/releases) on your PC and extract it. It
    contains `Vitox_<version>_x64.msix` (the app), its certificate (`.cer`) and `Microsoft.VCLibs.x64.14.00.appx`
    (a required dependency).
 2. On the Xbox, open **Dev Home** and note the **Remote Access** address (enable *Remote Access* in Dev Home
