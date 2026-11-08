@@ -61,6 +61,7 @@ the Vitox quick menu, and **L3** to show a cursor that simulates the Vita's touc
 | Persona 3: Dancing in Moonlight | PCSE01274 | US | ✅ Playable | Plays without issues |
 | Persona 5: Dancing in Starlight | PCSE01275 | US | ✅ Playable | Plays without issues |
 | Hatsune Miku: Project DIVA X | PCSE00867 | US | ✅ Playable | Plays without issues |
+| WipEout 2048 | PCSA00015 | US | ✅ Playable | The Game Mode menu is touch-only: press **L3** for the touch cursor and tap a mode (needs 0.1.1.9 or later) |
 | Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
