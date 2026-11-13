@@ -6,10 +6,10 @@
 [Vita3K](https://github.com/Vita3K/Vita3K) emulator core as a UWP app with a console-friendly library
 launcher, so commercial Vita games and homebrew can be installed from a USB drive and played on an Xbox.
 
-> **Alpha (version 0.2).** Vitox is in alpha and will keep getting updates. Not every game runs correctly yet, so
+> **Alpha (version 0.3).** Vitox is in alpha and will keep getting updates. Not every game runs correctly yet, so
 > expect bugs and games that do not start. If you find a bug, please report it in
 > [Issues](https://github.com/nirally/Vitox/issues) (game name, title ID and what happened) so it can be fixed.
-> Download the latest build (`vitox-0.2.zip`) from [Releases](https://github.com/nirally/Vitox/releases).
+> Download the latest build (`vitox-0.3.zip`) from [Releases](https://github.com/nirally/Vitox/releases).
 
 ---
 
@@ -40,7 +40,7 @@ the Vitox quick menu, and **L3** to show a cursor that simulates the Vita's touc
   DLC and homebrew. NoNpDrm dumps are decrypted during installation (PFS, as upstream Vita3K does).
 - **Settings**: controller remapping and stick dead zones, internal resolution upscaling up to 4K (1x–4x),
   asynchronous shader compilation and shader pre-warming (with a loading screen), a performance statistics
-  overlay (FPS / memory / CPU), library options (hide homebrew), SteamGridDB artwork (your own API key).
+  overlay (FPS / memory / CPU), library options (hide homebrew), launcher sounds on/off, SteamGridDB artwork (your own API key).
 - **Per-game settings**: resolution, shader options and overlay can be set per title; uninstall with or
   without save data.
 - **Saves, trophies, DLC**: save data and trophies are stored as on Vita3K; trophy unlocks show a banner
@@ -62,8 +62,10 @@ the Vitox quick menu, and **L3** to show a cursor that simulates the Vita's touc
 | Persona 5: Dancing in Starlight | PCSE01275 | US | ✅ Playable | Plays without issues |
 | Hatsune Miku: Project DIVA X | PCSE00867 | US | ✅ Playable | Plays without issues |
 | WipEout 2048 | PCSA00015 | US | ✅ Playable | The Game Mode menu is touch-only: press **L3** for the touch cursor and tap a mode (needs 0.2 or later) |
-| Uncharted: Golden Abyss | PCSA00029 | US | 🟡 In-game | Reaches gameplay; graphical glitches (being fixed) |
-| Killzone: Mercenary | PCSA00107 | US | 🟡 In-game | Campaign plays without crashing; textures are corrupted (same glitches as upstream Vita3K on PC); slow until shaders are cached |
+| Uncharted: Golden Abyss | PCSA00029 | US | ✅ Playable | Looks great, including at upscaled resolutions (the speckle and rainbow glitches are fixed in 0.3) |
+| Killzone: Mercenary | PCSA00107 | US | 🟡 In-game | Campaign plays. Corrupted textures, lag spikes, slow texture loading and the smeared glow around text are fixed in 0.3; more work is still planned |
+| Ridge Racer | PCSE00001 | US | ✅ Playable | Plays without issues (needs 0.3 or later) |
+| Run Sackboy! Run! | PCSA00490 | US | ✅ Playable | Runs at 60 FPS (needs 0.3 or later). At the title screen, press **A** to dismiss the empty message box |
 
 **Other games may work too — they simply have not been tested yet.** If you run another game with Vitox
 (working or not), please let me know (open an issue) with the game, its title ID and what you saw, so I can add
@@ -73,7 +75,7 @@ it to the table.
 
 These steps assume your Xbox Series X|S is already in **Developer Mode**.
 
-1. Download `vitox-0.2.zip` (or the newest release) from [Releases](https://github.com/nirally/Vitox/releases) on your PC and extract it. It
+1. Download `vitox-0.3.zip` (or the newest release) from [Releases](https://github.com/nirally/Vitox/releases) on your PC and extract it. It
    contains `Vitox_<version>_x64.msix` (the app), its certificate (`.cer`) and `Microsoft.VCLibs.x64.14.00.appx`
    (a required dependency).
 2. On the Xbox, open **Dev Home** and note the **Remote Access** address (enable *Remote Access* in Dev Home
@@ -153,6 +155,8 @@ PS Vita firmware.
 - [Vita3K](https://github.com/Vita3K/Vita3K) and its contributors: the emulator core this project is built on.
 - [Dynarmic](https://github.com/lioncash/dynarmic), [Mesa](https://www.mesa3d.org/) (Dozen),
   [psvpfstools](https://github.com/motoharu-gosuto/psvpfstools), miniz and the other libraries Vita3K uses.
+- [Vita3K-Plus](https://github.com/nckstwrt/Vita3K-Plus) by nckstwrt: several Killzone: Mercenary fixes (texture
+  copies, shader maths, mip level selection) follow the approach of that fork.
 - [SteamGridDB](https://www.steamgriddb.com/) for optional artwork.
 
 Vitox is not affiliated with Sony, Microsoft or the Vita3K team. "PlayStation" and "PS Vita" are trademarks of
